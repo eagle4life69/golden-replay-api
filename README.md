@@ -6,7 +6,7 @@ Golden Replay is designed to consume episode information from WordPress without 
 
 ## Current Version
 
-**0.1.1**
+**0.1.2**
 
 ## Current API Endpoint
 
@@ -107,6 +107,8 @@ WordPress checks the latest published release from this repository and compares 
 
 The updater caches the latest-release check for approximately 15 minutes to avoid unnecessary GitHub requests.
 
+Beginning with version 0.1.2, the updater preserves the directory name of the currently installed plugin when preparing GitHub release packages. This is intended to keep the WordPress plugin basename stable across updates so activation and automatic-update preferences are retained.
+
 ### Important Release Requirement
 
 A GitHub **Release** must be published for WordPress to discover a new version. Merely committing code to `main` does not publish a WordPress plugin update.
@@ -116,6 +118,7 @@ The release tag should correspond to the plugin version, for example:
 ```text
 v0.1.0
 v0.1.1
+v0.1.2
 v0.2.0
 ```
 
@@ -158,7 +161,9 @@ golden-replay-api/
 
 ## Current Development Status
 
-Version 0.1.1 corrects the series/publisher-feed mapping discovered during live API testing and normalizes missing credit roles to JSON `null` instead of an empty string.
+Version 0.1.2 hardens the GitHub updater so update packages preserve the currently installed WordPress plugin directory. The goal is to prevent an update from changing the plugin basename and causing WordPress to lose the plugin's activation or automatic-update state.
+
+The episode API behavior from version 0.1.1 remains unchanged, including corrected series/publisher-feed mapping and `null` values for missing credit roles.
 
 Planned future work may include additional episode/list endpoints, series browsing, genres, years, search, scheduled-content handling, artwork, and other data needed by the Golden Replay application.
 
