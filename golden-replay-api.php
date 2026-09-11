@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.2
+ * Version: 0.1.3
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'GRAPI_VERSION', '0.1.2' );
+define( 'GRAPI_VERSION', '0.1.3' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -72,9 +72,11 @@ final class Golden_Replay_API {
         $title_data          = self::parse_title( get_the_title( $post ) );
         $content_data        = self::parse_content( $post->post_content );
         $enclosure_data      = self::parse_enclosure( get_post_meta( $post->ID, 'enclosure', true ) );
-        $series_data         = self::build_series_from_show( $content_data['show'] );
+        $series_data         = self::build_series_from_show( $content_data['show'], $post );
+        $primary_genre_data  = self::detect_primary_genre( $post );
+        $episode_genres      = self::detect_episode_genres( $post, $primary_genre_data );
         $publisher_feed_data = self::detect_publisher_feed( $post );
-        $genre_data          = self::detect_genre( $post );
+        $source_data         = self::detect_source();
 
         $original_air_date = ! empty( $content_data['original_air_date'] )
             ? $content_data['original_air_date']
@@ -87,7 +89,10 @@ final class Golden_Replay_API {
             'title'             => $title_data['episode_title'],
             'series'            => $series_data,
             'publisher_feed'    => $publisher_feed_data,
-            'genre'             => $genre_data,
+            'genre'             => $primary_genre_data,
+            'primary_genre'     => $primary_genre_data,
+            'episode_genres'    => $episode_genres,
+            'source'            => $source_data,
             'original_air_date' => $original_air_date,
             'published_date'    => get_post_time( DATE_ATOM, false, $post ),
             'modified_date'     => get_post_modified_time( DATE_ATOM, false, $post ),
@@ -325,10 +330,28 @@ final class Golden_Replay_API {
             : sprintf( '%d:%02d', $minutes, $secs );
     }
 
-    private static function build_series_from_show( $show ) {
+    private static function build_series_from_show( $show, WP_Post $post ) {
         $show = sanitize_text_field( trim( (string) $show ) );
         if ( '' === $show ) {
             return null;
+        }
+
+        $show_key = self::normalize_taxonomy_label( $show );
+        $tags     = get_the_tags( $post->ID );
+
+        if ( $tags ) {
+            foreach ( $tags as $tag ) {
+                $tag_name_key = self::normalize_taxonomy_label( $tag->name );
+                $tag_slug_key = self::normalize_taxonomy_label( $tag->slug );
+
+                if ( $show_key === $tag_name_key || $show_key === $tag_slug_key ) {
+                    return array(
+                        'id'   => (int) $tag->term_id,
+                        'name' => $show,
+                        'slug' => $tag->slug,
+                    );
+                }
+            }
         }
 
         return array(
@@ -338,12 +361,93 @@ final class Golden_Replay_API {
         );
     }
 
+    private static function normalize_taxonomy_label( $value ) {
+        $value = html_entity_decode( wp_strip_all_tags( (string) $value ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+        $value = str_replace( array( '_', '-' ), ' ', $value );
+        $value = strtolower( $value );
+        $value = preg_replace( '/[^a-z0-9]+/', '', $value );
+
+        return (string) $value;
+    }
+
+    private static function genre_definitions() {
+        return array(
+            'western-podcast' => array( 'name' => 'Westerns', 'slug' => 'westerns' ),
+            'western'         => array( 'name' => 'Westerns', 'slug' => 'westerns' ),
+            'westerns'        => array( 'name' => 'Westerns', 'slug' => 'westerns' ),
+            'mystery'         => array( 'name' => 'Mystery', 'slug' => 'mystery' ),
+            'drama'           => array( 'name' => 'Drama', 'slug' => 'drama' ),
+            'comedy'          => array( 'name' => 'Comedy', 'slug' => 'comedy' ),
+            'crime'           => array( 'name' => 'Crime', 'slug' => 'crime' ),
+            'detective'       => array( 'name' => 'Detective', 'slug' => 'detective' ),
+            'adventure'       => array( 'name' => 'Adventure', 'slug' => 'adventure' ),
+            'horror'          => array( 'name' => 'Horror', 'slug' => 'horror' ),
+            'sci-fi'          => array( 'name' => 'Science Fiction', 'slug' => 'science-fiction' ),
+            'science-fiction' => array( 'name' => 'Science Fiction', 'slug' => 'science-fiction' ),
+        );
+    }
+
+    private static function genre_from_term( $term, $source ) {
+        $definitions = self::genre_definitions();
+        $slug        = strtolower( (string) $term->slug );
+
+        if ( ! isset( $definitions[ $slug ] ) ) {
+            return null;
+        }
+
+        return array(
+            'id'     => (int) $term->term_id,
+            'name'   => $definitions[ $slug ]['name'],
+            'slug'   => $definitions[ $slug ]['slug'],
+            'source' => $source,
+        );
+    }
+
+    private static function detect_primary_genre( WP_Post $post ) {
+        $categories = get_the_category( $post->ID );
+
+        foreach ( $categories as $category ) {
+            $genre = self::genre_from_term( $category, 'category' );
+            if ( $genre ) {
+                return $genre;
+            }
+        }
+
+        return null;
+    }
+
+    private static function detect_episode_genres( WP_Post $post, $primary_genre ) {
+        $genres = array();
+        $seen   = array();
+
+        if ( is_array( $primary_genre ) && ! empty( $primary_genre['slug'] ) ) {
+            $genres[] = $primary_genre;
+            $seen[ $primary_genre['slug'] ] = true;
+        }
+
+        $tags = get_the_tags( $post->ID );
+        if ( $tags ) {
+            foreach ( $tags as $tag ) {
+                $genre = self::genre_from_term( $tag, 'tag' );
+                if ( ! $genre || isset( $seen[ $genre['slug'] ] ) ) {
+                    continue;
+                }
+
+                $genres[] = $genre;
+                $seen[ $genre['slug'] ] = true;
+            }
+        }
+
+        return $genres;
+    }
+
     private static function detect_publisher_feed( WP_Post $post ) {
         $categories = get_the_category( $post->ID );
 
         foreach ( $categories as $category ) {
             $slug = (string) $category->slug;
-            if ( 'western-podcast' === $slug || preg_match( '/-season-\d+$/', $slug ) ) {
+
+            if ( preg_match( '/-season-\d+$/', $slug ) || self::genre_from_term( $category, 'category' ) ) {
                 continue;
             }
 
@@ -357,21 +461,35 @@ final class Golden_Replay_API {
         return null;
     }
 
-    private static function detect_genre( WP_Post $post ) {
-        $tags = get_the_tags( $post->ID );
-        if ( $tags ) {
-            foreach ( $tags as $tag ) {
-                if ( 'westerns' === strtolower( $tag->slug ) || 'western' === strtolower( $tag->slug ) ) {
-                    return array(
-                        'id'   => (int) $tag->term_id,
-                        'name' => 'Westerns',
-                        'slug' => 'westerns',
-                    );
-                }
-            }
+    private static function detect_source() {
+        $site_url = home_url( '/' );
+        $host     = strtolower( (string) wp_parse_url( $site_url, PHP_URL_HOST ) );
+        $host     = preg_replace( '/^www\./', '', $host );
+
+        $known_sources = array(
+            'otrwesterns.com' => array(
+                'key'  => 'otrwesterns',
+                'name' => 'Old Time Radio Westerns',
+            ),
+            'otnetcast.com' => array(
+                'key'  => 'otnetcast',
+                'name' => 'Old Time Radio Netcast',
+            ),
+        );
+
+        if ( isset( $known_sources[ $host ] ) ) {
+            $key  = $known_sources[ $host ]['key'];
+            $name = $known_sources[ $host ]['name'];
+        } else {
+            $key  = sanitize_title( $host );
+            $name = get_bloginfo( 'name' );
         }
 
-        return null;
+        return array(
+            'key'      => $key,
+            'name'     => sanitize_text_field( $name ),
+            'site_url' => esc_url_raw( $site_url ),
+        );
     }
 }
 
