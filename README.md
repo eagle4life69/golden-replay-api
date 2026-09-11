@@ -1,44 +1,48 @@
 # Golden Replay API
 
-A secure, read-only WordPress REST API plugin that provides normalized classic radio episode data for the **Golden Replay** application.
-
-Golden Replay is designed to consume episode information from WordPress without exposing unnecessary WordPress internals or requiring the mobile application to parse rendered post content itself.
+A secure, read-only WordPress REST API plugin that provides normalized classic radio episode and catalog data for the **Golden Replay** application.
 
 ## Current Version
 
-**0.1.4**
+**0.1.5**
 
 ## Current API Endpoints
 
 ```text
 /wp-json/golden-replay/v1/episode/{id}
 /wp-json/golden-replay/v1/genres
+/wp-json/golden-replay/v1/series?genre={genre-slug}
 ```
 
-The endpoints return information derived only from published WordPress posts.
+All endpoints expose information derived only from published WordPress posts.
 
-## v0.1.4 Genre Catalog
+## v0.1.5 Series Catalog
 
-Version 0.1.4 adds the first Golden Replay browse/catalog endpoint:
+Version 0.1.5 adds genre-aware series discovery:
 
 ```text
-/wp-json/golden-replay/v1/genres
+/wp-json/golden-replay/v1/series?genre=westerns
 ```
 
-The endpoint returns only recognized genres that currently contain at least one published episode on the WordPress site.
+The `genre` parameter is required and must be a recognized canonical Golden Replay genre slug.
 
-Each genre includes:
+The endpoint finds published episodes discoverable through either the requested primary genre category or an additional recognized genre tag, groups those episodes by their historical `Show:`/series identity, and returns an alphabetized series catalog.
 
-- `name` — canonical Golden Replay genre name.
-- `slug` — canonical cross-site genre slug.
-- `episode_count` — published episodes discoverable through either the primary genre category or an additional recognized genre tag.
-- `primary_episode_count` — published episodes whose recognized genre category matches the genre.
+Each series includes:
 
-For example, an OTNetcast Escape episode categorized as Mystery and tagged Drama counts toward both Mystery and Drama in `episode_count`, but only toward Mystery in `primary_episode_count`.
+- `id` — source WordPress series tag term ID when a reliable tag match exists.
+- `name` — historical series/program name.
+- `slug` — canonicalized series slug for application use.
+- `source_slug` — source WordPress series tag slug when available.
+- `match_type` — `primary` when the requested genre is a primary category for episodes in the series, otherwise `episode`.
+- `matching_episode_count` — number of published episodes from this source that match the requested genre context.
+- `primary_episode_count` — number of those matching episodes whose primary category is the requested genre.
 
-Counts are built with WordPress taxonomy queries rather than parsing every post body. Results are cached for five minutes to keep the public catalog endpoint lightweight.
+A primary match takes precedence if a series has both primary and secondary matches.
 
-The response also includes the current WordPress source so Golden Replay can combine catalogs from multiple installations.
+This supports the Golden Replay browsing rule: a series can appear because it belongs to the requested catalog genre, or because individual episodes are additionally tagged for discovery in that genre. The later filtered episode-list endpoint will use the same genre context to decide whether to expose the full available series catalog or only genre-matching episodes.
+
+Series results are cached for five minutes. The endpoint validates genre input against the explicit Golden Replay genre allowlist and does not accept arbitrary taxonomy or query parameters.
 
 Example response shape:
 
@@ -49,69 +53,78 @@ Example response shape:
     "name": "Old Time Radio Netcast",
     "site_url": "https://otnetcast.com/"
   },
-  "genres": [
+  "genre": {
+    "name": "Drama",
+    "slug": "drama"
+  },
+  "series": [
     {
-      "name": "Mystery",
-      "slug": "mystery",
-      "episode_count": 100,
-      "primary_episode_count": 100
-    },
-    {
-      "name": "Drama",
-      "slug": "drama",
-      "episode_count": 60,
+      "id": 26,
+      "name": "Escape",
+      "slug": "escape",
+      "source_slug": "escape",
+      "match_type": "episode",
+      "matching_episode_count": 100,
       "primary_episode_count": 0
     }
   ]
 }
 ```
 
+## v0.1.4 Genre Catalog
+
+```text
+/wp-json/golden-replay/v1/genres
+```
+
+The genre endpoint returns recognized genres that contain at least one published episode on the current WordPress site.
+
+Each genre includes a canonical `name` and `slug`, `episode_count` for episodes discoverable through either the primary category or an additional genre tag, and `primary_episode_count` for episodes whose recognized category is that genre.
+
+Genre results are built with WordPress taxonomy queries and cached for five minutes.
+
 ## Taxonomy Model
 
 ### Series
 
-The historical radio series is read from the episode content's `Show:` value. Golden Replay then attempts to match that show name to one of the post's WordPress tags. When a matching series tag is found, its real WordPress term ID and slug are returned. If no reliable match exists, Golden Replay safely falls back to the `Show:` value with a null ID.
+The historical radio series is read from the episode content's `Show:` value. Golden Replay attempts to match that show name to an assigned WordPress tag. When a matching series tag is found, its real source WordPress term ID and slug are returned. If no reliable match exists, Golden Replay safely falls back to the `Show:` value with a null ID.
+
+WordPress term IDs are source-local. Golden Replay should use normalized series identity rather than treating a term ID from one WordPress site as a global identifier.
 
 ### Primary Genre
 
 The primary browse genre comes from a recognized WordPress category. Current recognized genres include Westerns, Mystery, Drama, Comedy, Crime, Detective, Adventure, Horror, and Science Fiction.
 
-`Western Podcast`, `Western`, and `Westerns` are normalized to the Golden Replay genre `Westerns`.
+`Western Podcast`, `Western`, and `Westerns` normalize to the Golden Replay genre `Westerns`.
 
-The existing `genre` field remains as a compatibility alias for `primary_genre`.
+The episode endpoint's existing `genre` field remains a compatibility alias for `primary_genre`.
 
 ### Episode Genres
 
-`episode_genres` contains the primary category genre plus any additional recognized genre tags assigned to the episode. Duplicate genres are removed.
+`episode_genres` contains the primary category genre plus any additional recognized genre tags assigned to an episode. Duplicate canonical genres are removed.
 
-This supports anthology and cross-genre discovery. When a requested genre matches a series' primary catalog genre, the full available series catalog can be shown. When a series appears through an additional episode genre, only episodes matching that requested genre should be shown in that browse context.
+This supports anthology and cross-genre discovery without fabricating classifications that are not present in the source data.
 
 ### Source
 
-Each response identifies its WordPress source so the app can normalize records from more than one WordPress installation without treating the source site as the genre.
+Each catalog response identifies its WordPress source so Golden Replay can normalize records from multiple installations.
 
 Known sources currently include:
 
 - `otrwesterns` — Old Time Radio Westerns
 - `otnetcast` — Old Time Radio Netcast
 
-Unknown installations fall back to their WordPress site name and host-derived source key.
+Unknown installations fall back to their WordPress site name and a host-derived source key.
 
 ### Publisher Feed
 
-`publisher_feed` remains available as provenance metadata, but it is not used as the Golden Replay genre. Categories recognized as genres and season categories are excluded when detecting a publisher/feed grouping.
-
-## Returned Episode Data
-
-The episode endpoint builds an explicit, whitelisted response containing information such as WordPress post ID, stable URL, episode title, series, publisher/feed information, genres, source, original air date, publication dates, description, duration, file size, Spreaker media information, structured credits, and availability.
-
-Fields that cannot be reliably determined are returned as `null` or an empty collection rather than fabricated.
+`publisher_feed` remains available on episode records as provenance metadata. It is not used as the Golden Replay genre.
 
 ## Audio / Spreaker
 
-Golden Replay reads the WordPress `enclosure` post metadata server-side. When a valid Spreaker enclosure is present, the plugin extracts the Spreaker episode ID and media URL.
+Golden Replay reads WordPress `enclosure` post metadata server-side. When a valid Spreaker enclosure is present, the plugin extracts the Spreaker episode ID and existing media URL.
 
-Spreaker URLs are validated and currently restricted to the `api.spreaker.com` host. The application therefore receives the existing Spreaker-hosted media URL instead of constructing an arbitrary remote URL.
+Spreaker URLs are validated and restricted to the `api.spreaker.com` host. Duration and file-size values remain nullable because the Spreaker WordPress integration may not populate those enclosure values until its metadata has been refreshed.
 
 ## Security Design
 
@@ -119,25 +132,24 @@ The public API is intentionally read-only and narrowly scoped.
 
 Current protections include:
 
-- Only published WordPress posts are returned or counted.
+- Only published WordPress posts are returned, counted, or included in catalog discovery.
 - Episode IDs are validated as positive integers.
-- Responses are constructed from an explicit whitelist of fields.
-- Raw WordPress post metadata is not exposed.
+- Series genre input is restricted to the explicit Golden Replay genre allowlist.
+- Responses are constructed from explicit fields rather than exposing raw WordPress records or post meta.
 - No create, edit, delete, upload, or execution endpoints are provided.
 - No database credentials, API keys, access tokens, or other secrets are stored in the plugin.
 - The client cannot provide an arbitrary URL for the server to retrieve.
 - Spreaker media URLs found in enclosure metadata are validated before being returned.
 - Errors use generic messages rather than exposing filesystem paths, SQL, stack traces, or server internals.
+- Catalog results are cached to reduce repeated public-query load.
 
-The repository is public by design. Security must not depend on hiding the source code.
+The repository is public by design. Security does not depend on hiding the source code.
 
 ## Automatic Updates
 
-The plugin includes a native GitHub release updater in `github-updater.php`.
+The plugin includes the existing native GitHub release updater in `github-updater.php`. Beginning with version 0.1.2, the updater preserves the installed plugin directory so activation and automatic-update preferences remain stable across GitHub release updates.
 
-WordPress checks the latest published release from this repository and compares its version with the installed plugin version. Beginning with version 0.1.2, the updater preserves the directory name of the currently installed plugin when preparing GitHub release packages so activation and automatic-update preferences are retained.
-
-A published GitHub Release is required for WordPress to discover a new version. The release tag should correspond to the plugin version, such as `v0.1.4`.
+A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.5`.
 
 ## Development Workflow
 
@@ -157,7 +169,7 @@ WordPress detects the newer release
 
 ## Current Development Status
 
-Version 0.1.4 adds the first browse endpoint, `/genres`. The next catalog work can build on this contract with series and filtered episode-list endpoints.
+Version 0.1.5 adds genre-aware series discovery. The next catalog step is a filtered episode-list endpoint that preserves the selected genre context when a listener enters a series.
 
 ## Publisher
 
