@@ -1,0 +1,377 @@
+<?php
+/**
+ * Plugin Name: Golden Replay API
+ * Plugin URI: https://github.com/eagle4life69/golden-replay-api
+ * Description: Read-only REST API for Golden Replay episode data.
+ * Version: 0.1.0
+ * Author: Rhynes Media LLC
+ * License: GPL-2.0-or-later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
+ * Text Domain: golden-replay-api
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
+
+final class Golden_Replay_API {
+    const VERSION   = '0.1.0';
+    const NAMESPACE = 'golden-replay/v1';
+
+    public static function init() {
+        add_action( 'rest_api_init', array( __CLASS__, 'register_routes' ) );
+    }
+
+    public static function register_routes() {
+        register_rest_route(
+            self::NAMESPACE,
+            '/episode/(?P<id>\d+)',
+            array(
+                'methods'             => WP_REST_Server::READABLE,
+                'callback'            => array( __CLASS__, 'get_episode' ),
+                'permission_callback' => '__return_true',
+                'args'                => array(
+                    'id' => array(
+                        'description'       => 'WordPress post ID for the episode.',
+                        'type'              => 'integer',
+                        'required'          => true,
+                        'sanitize_callback' => 'absint',
+                        'validate_callback' => function ( $param ) {
+                            return is_numeric( $param ) && (int) $param > 0;
+                        },
+                    ),
+                ),
+            )
+        );
+    }
+
+    public static function get_episode( WP_REST_Request $request ) {
+        $post_id = absint( $request->get_param( 'id' ) );
+        $post    = get_post( $post_id );
+
+        if ( ! $post || 'post' !== $post->post_type || 'publish' !== $post->post_status ) {
+            return new WP_Error(
+                'golden_replay_episode_not_found',
+                'Episode not found.',
+                array( 'status' => 404 )
+            );
+        }
+
+        $episode = self::build_episode_payload( $post );
+
+        return rest_ensure_response( $episode );
+    }
+
+    private static function build_episode_payload( WP_Post $post ) {
+        $title_data     = self::parse_title( get_the_title( $post ) );
+        $content_data   = self::parse_content( $post->post_content );
+        $enclosure_data = self::parse_enclosure( get_post_meta( $post->ID, 'enclosure', true ) );
+        $series_data    = self::detect_series( $post );
+        $genre_data     = self::detect_genre( $post );
+
+        $original_air_date = ! empty( $content_data['original_air_date'] )
+            ? $content_data['original_air_date']
+            : $title_data['original_air_date'];
+
+        return array(
+            'post_id'           => (int) $post->ID,
+            'web_url'           => add_query_arg( 'p', (int) $post->ID, home_url( '/' ) ),
+            'pretty_url'        => get_permalink( $post ),
+            'title'             => $title_data['episode_title'],
+            'series'            => $series_data,
+            'publisher_feed'    => array(
+                'name' => ! empty( $content_data['show'] ) ? $content_data['show'] : null,
+            ),
+            'genre'             => $genre_data,
+            'original_air_date' => $original_air_date,
+            'published_date'    => get_post_time( DATE_ATOM, false, $post ),
+            'modified_date'     => get_post_modified_time( DATE_ATOM, false, $post ),
+            'description'       => ! empty( $content_data['description'] ) ? $content_data['description'] : null,
+            'duration_seconds'  => $enclosure_data['duration_seconds'],
+            'duration_display'  => $enclosure_data['duration_display'],
+            'file_size_bytes'   => $enclosure_data['file_size_bytes'],
+            'file_size_display' => $enclosure_data['file_size_display'],
+            'audio'             => array(
+                'provider'     => $enclosure_data['provider'],
+                'episode_id'   => $enclosure_data['episode_id'],
+                'stream_url'   => $enclosure_data['stream_url'],
+                'download_url' => $enclosure_data['download_url'],
+            ),
+            'credits'           => $content_data['credits'],
+            'availability'      => array(
+                'status'        => 'published',
+                'available'     => true,
+                'scheduled_for' => null,
+            ),
+        );
+    }
+
+    private static function parse_title( $raw_title ) {
+        $title = html_entity_decode( wp_strip_all_tags( (string) $raw_title ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+        $title = preg_replace( '/\s+/u', ' ', trim( $title ) );
+
+        $original_air_date = null;
+        if ( preg_match( '/\((\d{2})-(\d{2})-(\d{2})\)\s*$/', $title, $m ) ) {
+            $year = (int) $m[3];
+            $year = $year >= 30 ? 1900 + $year : 2000 + $year;
+            $original_air_date = sprintf( '%04d-%02d-%02d', $year, (int) $m[1], (int) $m[2] );
+            $title = trim( preg_replace( '/\s*\(\d{2}-\d{2}-\d{2}\)\s*$/', '', $title ) );
+        }
+
+        $episode_title = $title;
+        $parts = preg_split( '/\s*[\|\x{2013}\x{2014}]\s*/u', $title, 2 );
+        if ( ! empty( $parts[0] ) ) {
+            $episode_title = trim( $parts[0] );
+        }
+
+        return array(
+            'episode_title'    => $episode_title,
+            'original_air_date' => $original_air_date,
+        );
+    }
+
+    private static function parse_content( $content ) {
+        $text = wp_strip_all_tags( str_replace( array( '<br>', '<br/>', '<br />' ), "\n", (string) $content ) );
+        $text = html_entity_decode( $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+        $text = preg_replace( "/\r\n?|\x{2028}|\x{2029}/u", "\n", $text );
+        $lines = array_values( array_filter( array_map( 'trim', explode( "\n", $text ) ), 'strlen' ) );
+
+        $result = array(
+            'description'       => null,
+            'original_air_date' => null,
+            'show'              => null,
+            'credits'           => array(),
+        );
+
+        $credit_types = array(
+            'Stars:'          => 'star',
+            'Star:'           => 'star',
+            'Special Guests:' => 'special_guest',
+            'Special Guest:'  => 'special_guest',
+            'Writer:'         => 'writer',
+            'Writers:'        => 'writer',
+            'Producer:'       => 'producer',
+            'Producers:'      => 'producer',
+            'Director:'       => 'director',
+            'Directors:'      => 'director',
+            'Music:'          => 'music',
+            'Announcer:'      => 'announcer',
+            'Narrator:'       => 'narrator',
+        );
+
+        $active_credit_type = null;
+
+        foreach ( $lines as $line ) {
+            if ( 0 === stripos( $line, 'Description:' ) ) {
+                $result['description'] = trim( substr( $line, strlen( 'Description:' ) ) );
+                $active_credit_type = null;
+                continue;
+            }
+
+            if ( 0 === stripos( $line, 'Original Air Date:' ) ) {
+                $date_text = trim( substr( $line, strlen( 'Original Air Date:' ) ) );
+                $timestamp = strtotime( $date_text );
+                if ( $timestamp ) {
+                    $result['original_air_date'] = gmdate( 'Y-m-d', $timestamp );
+                }
+                $active_credit_type = null;
+                continue;
+            }
+
+            if ( 0 === stripos( $line, 'Show:' ) ) {
+                $result['show'] = trim( substr( $line, strlen( 'Show:' ) ) );
+                $active_credit_type = null;
+                continue;
+            }
+
+            if ( isset( $credit_types[ $line ] ) ) {
+                $active_credit_type = $credit_types[ $line ];
+                continue;
+            }
+
+            if ( preg_match( '/^[A-Za-z][A-Za-z ]+:$/', $line ) ) {
+                $active_credit_type = null;
+                continue;
+            }
+
+            if ( $active_credit_type && preg_match( '/^[\x{2022}\-*]\s*(.+)$/u', $line, $m ) ) {
+                $credit = self::parse_credit_line( $active_credit_type, trim( $m[1] ) );
+                if ( $credit ) {
+                    $result['credits'][] = $credit;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    private static function parse_credit_line( $type, $line ) {
+        $line = trim( str_replace( '_', ' ', $line ) );
+        if ( '' === $line || '.' === $line || '-' === $line ) {
+            return null;
+        }
+
+        $name = $line;
+        $role = null;
+
+        if ( preg_match( '/^(.+?)\s*\(([^()]*)\)\s*$/u', $line, $m ) ) {
+            $name = trim( $m[1] );
+            $role = trim( $m[2] );
+        }
+
+        return array(
+            'type' => sanitize_key( $type ),
+            'name' => sanitize_text_field( $name ),
+            'role' => '' !== $role ? sanitize_text_field( $role ) : null,
+        );
+    }
+
+    private static function parse_enclosure( $meta ) {
+        $result = array(
+            'provider'          => null,
+            'episode_id'        => null,
+            'stream_url'        => null,
+            'download_url'      => null,
+            'duration_seconds'  => null,
+            'duration_display'  => null,
+            'file_size_bytes'   => null,
+            'file_size_display' => null,
+        );
+
+        if ( ! is_string( $meta ) || '' === trim( $meta ) ) {
+            return $result;
+        }
+
+        $lines = preg_split( '/\r\n|\r|\n/', $meta );
+        if ( empty( $lines ) ) {
+            return $result;
+        }
+
+        foreach ( $lines as $line ) {
+            $line = trim( $line );
+            if ( '' === $line || false === strpos( $line, 'download.mp3' ) ) {
+                continue;
+            }
+
+            $validated_url = wp_http_validate_url( $line );
+            if ( ! $validated_url ) {
+                continue;
+            }
+
+            $host = strtolower( (string) wp_parse_url( $validated_url, PHP_URL_HOST ) );
+            if ( 'api.spreaker.com' !== $host ) {
+                continue;
+            }
+
+            if ( preg_match( '#/episodes/(\d+)/download\.mp3(?:\?.*)?$#', $validated_url, $m ) ) {
+                $result['provider']     = 'spreaker';
+                $result['episode_id']   = $m[1];
+                $result['stream_url']   = $validated_url;
+                $result['download_url'] = $validated_url;
+                break;
+            }
+        }
+
+        if ( isset( $lines[1] ) && ctype_digit( trim( $lines[1] ) ) ) {
+            $bytes = (int) trim( $lines[1] );
+            if ( $bytes > 0 ) {
+                $result['file_size_bytes']   = $bytes;
+                $result['file_size_display'] = size_format( $bytes, 2 );
+            }
+        }
+
+        $extra = trim( (string) end( $lines ) );
+        if ( is_serialized( $extra ) ) {
+            $unserialized = maybe_unserialize( $extra );
+            if ( is_array( $unserialized ) && ! empty( $unserialized['duration'] ) ) {
+                $seconds = self::duration_to_seconds( $unserialized['duration'] );
+                if ( null !== $seconds ) {
+                    $result['duration_seconds'] = $seconds;
+                    $result['duration_display'] = self::format_duration( $seconds );
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    private static function duration_to_seconds( $duration ) {
+        $duration = trim( (string) $duration );
+        if ( '' === $duration ) {
+            return null;
+        }
+
+        if ( ctype_digit( $duration ) ) {
+            return (int) $duration;
+        }
+
+        $parts = array_map( 'intval', explode( ':', $duration ) );
+        if ( 2 === count( $parts ) ) {
+            return ( $parts[0] * 60 ) + $parts[1];
+        }
+
+        if ( 3 === count( $parts ) ) {
+            return ( $parts[0] * 3600 ) + ( $parts[1] * 60 ) + $parts[2];
+        }
+
+        return null;
+    }
+
+    private static function format_duration( $seconds ) {
+        $seconds = max( 0, (int) $seconds );
+        $hours   = intdiv( $seconds, 3600 );
+        $minutes = intdiv( $seconds % 3600, 60 );
+        $secs    = $seconds % 60;
+
+        if ( $hours > 0 ) {
+            return sprintf( '%d:%02d:%02d', $hours, $minutes, $secs );
+        }
+
+        return sprintf( '%d:%02d', $minutes, $secs );
+    }
+
+    private static function detect_series( WP_Post $post ) {
+        $categories = get_the_category( $post->ID );
+        $candidate  = null;
+
+        foreach ( $categories as $category ) {
+            $slug = (string) $category->slug;
+
+            if ( 'western-podcast' === $slug || preg_match( '/-season-\d+$/', $slug ) ) {
+                continue;
+            }
+
+            $candidate = $category;
+            break;
+        }
+
+        if ( ! $candidate ) {
+            return null;
+        }
+
+        return array(
+            'id'   => (int) $candidate->term_id,
+            'name' => $candidate->name,
+            'slug' => $candidate->slug,
+        );
+    }
+
+    private static function detect_genre( WP_Post $post ) {
+        $tags = get_the_tags( $post->ID );
+        if ( $tags ) {
+            foreach ( $tags as $tag ) {
+                if ( 'westerns' === strtolower( $tag->slug ) || 'western' === strtolower( $tag->slug ) ) {
+                    return array(
+                        'id'   => (int) $tag->term_id,
+                        'name' => 'Westerns',
+                        'slug' => 'westerns',
+                    );
+                }
+            }
+        }
+
+        return null;
+    }
+}
+
+Golden_Replay_API::init();
