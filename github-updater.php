@@ -129,7 +129,17 @@ function grapi_github_fix_source_folder( $source, $remote_source, $upgrader, $ho
         return $source;
     }
 
-    $desired_source = trailingslashit( $remote_source ) . 'golden-replay-api/';
+    // Keep the extracted update package in the same plugin directory name that
+    // WordPress is currently using. Changing the directory changes the plugin
+    // basename, which can make WordPress treat an update as a different plugin
+    // and lose activation/auto-update state.
+    $installed_directory = basename( dirname( GRAPI_PLUGIN_FILE ) );
+
+    if ( '' === $installed_directory || '.' === $installed_directory ) {
+        $installed_directory = 'golden-replay-api';
+    }
+
+    $desired_source = trailingslashit( $remote_source ) . trailingslashit( $installed_directory );
 
     if ( untrailingslashit( $source ) === untrailingslashit( $desired_source ) ) {
         return $source;
