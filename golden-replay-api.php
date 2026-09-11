@@ -14,8 +14,16 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
+define( 'GRAPI_VERSION', '0.1.0' );
+define( 'GRAPI_PLUGIN_FILE', __FILE__ );
+
+$grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
+if ( file_exists( $grapi_updater ) ) {
+    require_once $grapi_updater;
+}
+
 final class Golden_Replay_API {
-    const VERSION   = '0.1.0';
+    const VERSION   = GRAPI_VERSION;
     const NAMESPACE = 'golden-replay/v1';
 
     public static function init() {
@@ -57,9 +65,7 @@ final class Golden_Replay_API {
             );
         }
 
-        $episode = self::build_episode_payload( $post );
-
-        return rest_ensure_response( $episode );
+        return rest_ensure_response( self::build_episode_payload( $post ) );
     }
 
     private static function build_episode_payload( WP_Post $post ) {
@@ -118,14 +124,10 @@ final class Golden_Replay_API {
             $title = trim( preg_replace( '/\s*\(\d{2}-\d{2}-\d{2}\)\s*$/', '', $title ) );
         }
 
-        $episode_title = $title;
         $parts = preg_split( '/\s*[\|\x{2013}\x{2014}]\s*/u', $title, 2 );
-        if ( ! empty( $parts[0] ) ) {
-            $episode_title = trim( $parts[0] );
-        }
 
         return array(
-            'episode_title'    => $episode_title,
+            'episode_title'     => ! empty( $parts[0] ) ? trim( $parts[0] ) : $title,
             'original_air_date' => $original_air_date,
         );
     }
@@ -243,9 +245,6 @@ final class Golden_Replay_API {
         }
 
         $lines = preg_split( '/\r\n|\r|\n/', $meta );
-        if ( empty( $lines ) ) {
-            return $result;
-        }
 
         foreach ( $lines as $line ) {
             $line = trim( $line );
@@ -309,7 +308,6 @@ final class Golden_Replay_API {
         if ( 2 === count( $parts ) ) {
             return ( $parts[0] * 60 ) + $parts[1];
         }
-
         if ( 3 === count( $parts ) ) {
             return ( $parts[0] * 3600 ) + ( $parts[1] * 60 ) + $parts[2];
         }
@@ -323,37 +321,28 @@ final class Golden_Replay_API {
         $minutes = intdiv( $seconds % 3600, 60 );
         $secs    = $seconds % 60;
 
-        if ( $hours > 0 ) {
-            return sprintf( '%d:%02d:%02d', $hours, $minutes, $secs );
-        }
-
-        return sprintf( '%d:%02d', $minutes, $secs );
+        return $hours > 0
+            ? sprintf( '%d:%02d:%02d', $hours, $minutes, $secs )
+            : sprintf( '%d:%02d', $minutes, $secs );
     }
 
     private static function detect_series( WP_Post $post ) {
         $categories = get_the_category( $post->ID );
-        $candidate  = null;
 
         foreach ( $categories as $category ) {
             $slug = (string) $category->slug;
-
             if ( 'western-podcast' === $slug || preg_match( '/-season-\d+$/', $slug ) ) {
                 continue;
             }
 
-            $candidate = $category;
-            break;
+            return array(
+                'id'   => (int) $category->term_id,
+                'name' => $category->name,
+                'slug' => $category->slug,
+            );
         }
 
-        if ( ! $candidate ) {
-            return null;
-        }
-
-        return array(
-            'id'   => (int) $candidate->term_id,
-            'name' => $candidate->name,
-            'slug' => $candidate->slug,
-        );
+        return null;
     }
 
     private static function detect_genre( WP_Post $post ) {
