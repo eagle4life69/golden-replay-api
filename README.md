@@ -6,7 +6,7 @@ Golden Replay is designed to consume episode information from WordPress without 
 
 ## Current Version
 
-**0.1.2**
+**0.1.3**
 
 ## Current API Endpoint
 
@@ -20,7 +20,61 @@ Example using WordPress post ID `21571`:
 https://www.otrwesterns.com/wp-json/golden-replay/v1/episode/21571
 ```
 
-The endpoint currently returns data only for published WordPress posts.
+The endpoint returns data only for published WordPress posts.
+
+## v0.1.3 Taxonomy Model
+
+Version 0.1.3 establishes the discovery taxonomy that Golden Replay will use across multiple WordPress sites.
+
+### Series
+
+The historical radio series is read from the episode content's `Show:` value. Golden Replay then attempts to match that show name to one of the post's WordPress tags. When a matching series tag is found, its real WordPress term ID and slug are returned. If no reliable match exists, Golden Replay safely falls back to the `Show:` value with a null ID.
+
+Example:
+
+```json
+"series": {
+  "id": 123,
+  "name": "Lux Radio Theatre",
+  "slug": "lux_radio_theatre"
+}
+```
+
+### Primary Genre
+
+The primary browse genre comes from a recognized WordPress category. Current recognized genres include Westerns, Mystery, Drama, Comedy, Crime, Detective, Adventure, Horror, and Science Fiction.
+
+`Western Podcast`, `Western`, and `Westerns` are normalized to the Golden Replay genre `Westerns`.
+
+The existing `genre` field remains as a compatibility alias for `primary_genre` in v0.1.3.
+
+### Episode Genres
+
+`episode_genres` contains the primary category genre plus any additional recognized genre tags assigned to the episode. Duplicate genres are removed.
+
+This supports anthology and cross-genre discovery. For example, a Lux Radio Theatre episode may belong to a Drama catalog while also being discoverable as a Western-themed episode.
+
+Golden Replay can therefore use this browse behavior:
+
+- When a requested genre matches a series' primary catalog genre, the full available series catalog can be shown.
+- When a series appears through an additional episode genre, only episodes matching that requested genre should be shown in that browse context.
+
+The actual filtered series/list endpoints will be added after the taxonomy contract has been validated against real data.
+
+### Source
+
+Each episode now includes a `source` object so the app can normalize records from more than one WordPress installation without treating the source site as the genre.
+
+Known sources currently include:
+
+- `otrwesterns` — Old Time Radio Westerns
+- `otnetcast` — Old Time Radio Netcast
+
+Unknown installations fall back to their WordPress site name and host-derived source key.
+
+### Publisher Feed
+
+`publisher_feed` remains available as provenance metadata, but it is no longer used as the Golden Replay genre. Categories recognized as genres and season categories are excluded when detecting a publisher/feed grouping.
 
 ## Returned Episode Data
 
@@ -32,46 +86,25 @@ The API builds an explicit, whitelisted response containing information such as:
 - Episode title
 - Historical series/program information
 - Publisher/feed information
-- Genre
+- Primary genre
+- Episode discovery genres
+- Source WordPress site
 - Original historical air date
 - WordPress publication and modification dates
 - Episode description
 - Duration in seconds and display format
 - File size in bytes and display format
 - Spreaker provider, episode ID, and media URL
-- Structured credits such as stars, guests, writers, producers, directors, music, announcers, and narrators
+- Structured credits
 - Availability information
 
 Fields that cannot be reliably determined are returned as `null` or an empty collection rather than fabricated.
-
-### Series and Publisher Feed Mapping
-
-Golden Replay treats the episode post's `Show:` value as the historical radio series/program and the primary non-season WordPress category as the modern publisher/feed grouping.
-
-For example, a Lux Radio Theatre episode published through the Western Stories podcast is represented as:
-
-```json
-{
-  "series": {
-    "name": "Lux Radio Theatre",
-    "slug": "lux-radio-theatre"
-  },
-  "publisher_feed": {
-    "name": "Western Stories",
-    "slug": "western-stories"
-  }
-}
-```
-
-This keeps historical program identity separate from the podcast/feed used to publish the episode.
 
 ## Audio / Spreaker
 
 Golden Replay reads the WordPress `enclosure` post metadata server-side. When a valid Spreaker enclosure is present, the plugin extracts the Spreaker episode ID and media URL.
 
 Spreaker URLs are validated and currently restricted to the `api.spreaker.com` host. The application therefore receives the existing Spreaker-hosted media URL instead of constructing an arbitrary remote URL.
-
-This is important because Spreaker remains the audio distribution provider for these episodes.
 
 ## Security Design
 
@@ -91,44 +124,17 @@ Current protections include:
 
 The repository is public by design. Security must not depend on hiding the source code.
 
-## WordPress Installation
-
-1. Download the ZIP from a published GitHub Release.
-2. In WordPress, open **Plugins > Add New Plugin > Upload Plugin**.
-3. Upload the Golden Replay API ZIP.
-4. Install and activate the plugin.
-5. Test a known published episode using the REST endpoint.
-
 ## Automatic Updates
 
 The plugin includes a native GitHub release updater in `github-updater.php`.
 
-WordPress checks the latest published release from this repository and compares its version with the installed plugin version. When a newer version is available, it can appear in the normal WordPress Plugins update interface.
+WordPress checks the latest published release from this repository and compares its version with the installed plugin version. Beginning with version 0.1.2, the updater preserves the directory name of the currently installed plugin when preparing GitHub release packages so activation and automatic-update preferences are retained.
 
-The updater caches the latest-release check for approximately 15 minutes to avoid unnecessary GitHub requests.
-
-Beginning with version 0.1.2, the updater preserves the directory name of the currently installed plugin when preparing GitHub release packages. This is intended to keep the WordPress plugin basename stable across updates so activation and automatic-update preferences are retained.
-
-### Important Release Requirement
-
-A GitHub **Release** must be published for WordPress to discover a new version. Merely committing code to `main` does not publish a WordPress plugin update.
-
-The release tag should correspond to the plugin version, for example:
-
-```text
-v0.1.0
-v0.1.1
-v0.1.2
-v0.2.0
-```
-
-The version in `golden-replay-api.php` must also be updated when a new plugin version is released.
+A published GitHub Release is required for WordPress to discover a new version. The release tag should correspond to the plugin version, such as `v0.1.3`.
 
 ## Development Workflow
 
 The `main` branch represents release-ready code and should remain protected.
-
-Normal development workflow:
 
 ```text
 Create a temporary feature/fix branch
@@ -139,33 +145,16 @@ Open a Pull Request into main
         ↓
 Review and merge
         ↓
-Update/version the plugin as appropriate
-        ↓
 Publish a GitHub Release
         ↓
 WordPress detects the newer release
 ```
 
-Temporary development branches can be deleted after their pull requests are merged.
-
-A permanent `develop` branch is not currently required.
-
-## Project Structure
-
-```text
-golden-replay-api/
-├── golden-replay-api.php   # Main plugin and REST API
-├── github-updater.php      # GitHub Release based WordPress updater
-└── README.md               # Project documentation
-```
-
 ## Current Development Status
 
-Version 0.1.2 hardens the GitHub updater so update packages preserve the currently installed WordPress plugin directory. The goal is to prevent an update from changing the plugin basename and causing WordPress to lose the plugin's activation or automatic-update state.
+Version 0.1.3 adds the normalized series/genre/source taxonomy needed before Golden Replay begins implementing browse endpoints such as genres, series, years, and filtered episode lists.
 
-The episode API behavior from version 0.1.1 remains unchanged, including corrected series/publisher-feed mapping and `null` values for missing credit roles.
-
-Planned future work may include additional episode/list endpoints, series browsing, genres, years, search, scheduled-content handling, artwork, and other data needed by the Golden Replay application.
+The existing single-episode endpoint and Spreaker enclosure behavior remain intact.
 
 ## Publisher
 
