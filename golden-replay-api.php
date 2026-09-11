@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.3
+ * Version: 0.1.4
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'GRAPI_VERSION', '0.1.3' );
+define( 'GRAPI_VERSION', '0.1.4' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -51,6 +51,16 @@ final class Golden_Replay_API {
                 ),
             )
         );
+
+        register_rest_route(
+            self::NAMESPACE,
+            '/genres',
+            array(
+                'methods'             => WP_REST_Server::READABLE,
+                'callback'            => array( __CLASS__, 'get_genres' ),
+                'permission_callback' => '__return_true',
+            )
+        );
     }
 
     public static function get_episode( WP_REST_Request $request ) {
@@ -66,6 +76,23 @@ final class Golden_Replay_API {
         }
 
         return rest_ensure_response( self::build_episode_payload( $post ) );
+    }
+
+    public static function get_genres() {
+        $cache_key = 'grapi_genres_v1';
+        $genres    = get_transient( $cache_key );
+
+        if ( false === $genres ) {
+            $genres = self::build_genres_payload();
+            set_transient( $cache_key, $genres, 5 * MINUTE_IN_SECONDS );
+        }
+
+        return rest_ensure_response(
+            array(
+                'source' => self::detect_source(),
+                'genres' => $genres,
+            )
+        );
     }
 
     private static function build_episode_payload( WP_Post $post ) {
@@ -385,6 +412,111 @@ final class Golden_Replay_API {
             'sci-fi'          => array( 'name' => 'Science Fiction', 'slug' => 'science-fiction' ),
             'science-fiction' => array( 'name' => 'Science Fiction', 'slug' => 'science-fiction' ),
         );
+    }
+
+    private static function build_genres_payload() {
+        $definitions = self::genre_definitions();
+        $canonical   = array();
+        $genres      = array();
+
+        foreach ( $definitions as $term_slug => $definition ) {
+            $canonical_slug = $definition['slug'];
+
+            if ( ! isset( $canonical[ $canonical_slug ] ) ) {
+                $canonical[ $canonical_slug ] = array(
+                    'name'    => $definition['name'],
+                    'slug'    => $canonical_slug,
+                    'aliases' => array(),
+                );
+            }
+
+            $canonical[ $canonical_slug ]['aliases'][] = $term_slug;
+        }
+
+        foreach ( $canonical as $genre ) {
+            $category_ids = self::get_genre_term_ids( 'category', $genre['aliases'] );
+            $tag_ids      = self::get_genre_term_ids( 'post_tag', $genre['aliases'] );
+
+            $primary_episode_count = self::count_genre_posts( $category_ids, array() );
+            $episode_count         = self::count_genre_posts( $category_ids, $tag_ids );
+
+            if ( 0 === $episode_count ) {
+                continue;
+            }
+
+            $genres[] = array(
+                'name'                  => $genre['name'],
+                'slug'                  => $genre['slug'],
+                'episode_count'         => $episode_count,
+                'primary_episode_count' => $primary_episode_count,
+            );
+        }
+
+        return $genres;
+    }
+
+    private static function get_genre_term_ids( $taxonomy, $aliases ) {
+        $term_ids = get_terms(
+            array(
+                'taxonomy'   => $taxonomy,
+                'hide_empty' => true,
+                'slug'       => array_values( array_unique( $aliases ) ),
+                'fields'     => 'ids',
+            )
+        );
+
+        if ( is_wp_error( $term_ids ) || ! is_array( $term_ids ) ) {
+            return array();
+        }
+
+        return array_values( array_map( 'intval', $term_ids ) );
+    }
+
+    private static function count_genre_posts( $category_ids, $tag_ids ) {
+        $tax_query = array();
+
+        if ( ! empty( $category_ids ) ) {
+            $tax_query[] = array(
+                'taxonomy' => 'category',
+                'field'    => 'term_id',
+                'terms'    => array_values( array_map( 'intval', $category_ids ) ),
+                'operator' => 'IN',
+            );
+        }
+
+        if ( ! empty( $tag_ids ) ) {
+            $tax_query[] = array(
+                'taxonomy' => 'post_tag',
+                'field'    => 'term_id',
+                'terms'    => array_values( array_map( 'intval', $tag_ids ) ),
+                'operator' => 'IN',
+            );
+        }
+
+        if ( empty( $tax_query ) ) {
+            return 0;
+        }
+
+        if ( count( $tax_query ) > 1 ) {
+            $tax_query = array_merge( array( 'relation' => 'OR' ), $tax_query );
+        }
+
+        $query = new WP_Query(
+            array(
+                'post_type'              => 'post',
+                'post_status'            => 'publish',
+                'fields'                 => 'ids',
+                'posts_per_page'         => 1,
+                'orderby'                => 'none',
+                'ignore_sticky_posts'    => true,
+                'no_found_rows'          => false,
+                'update_post_meta_cache' => false,
+                'update_post_term_cache' => false,
+                'tax_query'              => $tax_query,
+            )
+        );
+
+        return (int) $query->found_posts;
     }
 
     private static function genre_from_term( $term, $source ) {
