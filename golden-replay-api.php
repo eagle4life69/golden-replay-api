@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.0
+ * Version: 0.1.1
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'GRAPI_VERSION', '0.1.0' );
+define( 'GRAPI_VERSION', '0.1.1' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -69,11 +69,12 @@ final class Golden_Replay_API {
     }
 
     private static function build_episode_payload( WP_Post $post ) {
-        $title_data     = self::parse_title( get_the_title( $post ) );
-        $content_data   = self::parse_content( $post->post_content );
-        $enclosure_data = self::parse_enclosure( get_post_meta( $post->ID, 'enclosure', true ) );
-        $series_data    = self::detect_series( $post );
-        $genre_data     = self::detect_genre( $post );
+        $title_data          = self::parse_title( get_the_title( $post ) );
+        $content_data        = self::parse_content( $post->post_content );
+        $enclosure_data      = self::parse_enclosure( get_post_meta( $post->ID, 'enclosure', true ) );
+        $series_data         = self::build_series_from_show( $content_data['show'] );
+        $publisher_feed_data = self::detect_publisher_feed( $post );
+        $genre_data          = self::detect_genre( $post );
 
         $original_air_date = ! empty( $content_data['original_air_date'] )
             ? $content_data['original_air_date']
@@ -85,9 +86,7 @@ final class Golden_Replay_API {
             'pretty_url'        => get_permalink( $post ),
             'title'             => $title_data['episode_title'],
             'series'            => $series_data,
-            'publisher_feed'    => array(
-                'name' => ! empty( $content_data['show'] ) ? $content_data['show'] : null,
-            ),
+            'publisher_feed'    => $publisher_feed_data,
             'genre'             => $genre_data,
             'original_air_date' => $original_air_date,
             'published_date'    => get_post_time( DATE_ATOM, false, $post ),
@@ -224,7 +223,7 @@ final class Golden_Replay_API {
         return array(
             'type' => sanitize_key( $type ),
             'name' => sanitize_text_field( $name ),
-            'role' => '' !== $role ? sanitize_text_field( $role ) : null,
+            'role' => null !== $role && '' !== $role ? sanitize_text_field( $role ) : null,
         );
     }
 
@@ -326,7 +325,20 @@ final class Golden_Replay_API {
             : sprintf( '%d:%02d', $minutes, $secs );
     }
 
-    private static function detect_series( WP_Post $post ) {
+    private static function build_series_from_show( $show ) {
+        $show = sanitize_text_field( trim( (string) $show ) );
+        if ( '' === $show ) {
+            return null;
+        }
+
+        return array(
+            'id'   => null,
+            'name' => $show,
+            'slug' => sanitize_title( $show ),
+        );
+    }
+
+    private static function detect_publisher_feed( WP_Post $post ) {
         $categories = get_the_category( $post->ID );
 
         foreach ( $categories as $category ) {

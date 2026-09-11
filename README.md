@@ -6,7 +6,7 @@ Golden Replay is designed to consume episode information from WordPress without 
 
 ## Current Version
 
-**0.1.0**
+**0.1.1**
 
 ## Current API Endpoint
 
@@ -30,7 +30,7 @@ The API builds an explicit, whitelisted response containing information such as:
 - Stable WordPress URL (`?p=ID`)
 - Current pretty URL
 - Episode title
-- Series information
+- Historical series/program information
 - Publisher/feed information
 - Genre
 - Original historical air date
@@ -43,6 +43,27 @@ The API builds an explicit, whitelisted response containing information such as:
 - Availability information
 
 Fields that cannot be reliably determined are returned as `null` or an empty collection rather than fabricated.
+
+### Series and Publisher Feed Mapping
+
+Golden Replay treats the episode post's `Show:` value as the historical radio series/program and the primary non-season WordPress category as the modern publisher/feed grouping.
+
+For example, a Lux Radio Theatre episode published through the Western Stories podcast is represented as:
+
+```json
+{
+  "series": {
+    "name": "Lux Radio Theatre",
+    "slug": "lux-radio-theatre"
+  },
+  "publisher_feed": {
+    "name": "Western Stories",
+    "slug": "western-stories"
+  }
+}
+```
+
+This keeps historical program identity separate from the podcast/feed used to publish the episode.
 
 ## Audio / Spreaker
 
@@ -137,7 +158,7 @@ golden-replay-api/
 
 ## Current Development Status
 
-Version 0.1.0 is the initial API implementation. The first goal is to validate the normalized JSON contract against real OTRWesterns.com episode data before expanding the API.
+Version 0.1.1 corrects the series/publisher-feed mapping discovered during live API testing and normalizes missing credit roles to JSON `null` instead of an empty string.
 
 Planned future work may include additional episode/list endpoints, series browsing, genres, years, search, scheduled-content handling, artwork, and other data needed by the Golden Replay application.
 
