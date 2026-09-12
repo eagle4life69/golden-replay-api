@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.11
+ * Version: 0.1.12
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -12,7 +12,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'GRAPI_VERSION', '0.1.11' );
+define( 'GRAPI_VERSION', '0.1.12' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -239,11 +239,12 @@ final class Golden_Replay_API {
                 return new WP_Error( 'golden_replay_season_parent_not_found', 'No season categories were found for this series.', array( 'status' => 404 ) );
             }
 
-            $season_term = self::find_direct_season_term( $parent, $season_slug );
-            if ( ! $season_term ) {
+            $season_request = self::resolve_season_request( $parent, $season_slug );
+            if ( ! $season_request ) {
                 return new WP_Error( 'golden_replay_season_not_found', 'Season not found for the selected series.', array( 'status' => 404 ) );
             }
 
+            $season_term = $season_request['term'];
             $season_post_ids = get_objects_in_term( (int) $season_term->term_id, 'category' );
             if ( is_wp_error( $season_post_ids ) ) {
                 $season_post_ids = array();
@@ -252,7 +253,21 @@ final class Golden_Replay_API {
             $ids = array_values( array_filter( $ids, function( $id ) use ( $season_post_ids ) {
                 return isset( $season_post_ids[ (int) $id ] );
             } ) );
-            $season_response = self::season_term_payload( $season_term, count( $ids ) );
+
+            if ( null !== $season_request['year'] ) {
+                $requested_year = (int) $season_request['year'];
+                $ids = array_values( array_filter( $ids, function( $id ) use ( $requested_year ) {
+                    return $requested_year === self::episode_original_air_year( (int) $id );
+                } ) );
+                $season_response = self::season_term_payload( $season_term, count( $ids ), $requested_year );
+            } elseif ( $season_request['unknown_year'] ) {
+                $ids = array_values( array_filter( $ids, function( $id ) {
+                    return null === self::episode_original_air_year( (int) $id );
+                } ) );
+                $season_response = self::season_term_payload( $season_term, count( $ids ), null, true );
+            } else {
+                $season_response = self::season_term_payload( $season_term, count( $ids ) );
+            }
         }
 
         $order = 'desc' === strtolower( (string) $request->get_param( 'order' ) ) ? 'desc' : 'asc';
@@ -462,37 +477,68 @@ final class Golden_Replay_API {
 
     private static function is_season_term( $term ) {
         if ( ! is_object( $term ) ) { return false; }
-        return (bool) preg_match( '/(?:^|[-_\\s])season[-_\\s]*(\\d{2}|\\d{4})$/i', (string) $term->slug )
-            || (bool) preg_match( '/(?:^|[-_\\s])season[-_\\s]*(\\d{2}|\\d{4})$/i', (string) $term->name );
+        return (bool) preg_match( '/(?:^|[-_\\s])season[-_\\s]*(\\d{1,2}|\\d{4})$/i', (string) $term->slug )
+            || (bool) preg_match( '/(?:^|[-_\\s])season[-_\\s]*(\\d{1,2}|\\d{4})$/i', (string) $term->name );
     }
 
     private static function season_number_from_term( $term ) {
         foreach ( array( (string) $term->slug, (string) $term->name ) as $value ) {
-            if ( preg_match( '/(?:^|[-_\\s])season[-_\\s]*(\\d{2}|\\d{4})$/i', $value, $m ) ) {
+            if ( preg_match( '/(?:^|[-_\\s])season[-_\\s]*(\\d{1,2}|\\d{4})$/i', $value, $m ) ) {
                 return $m[1];
             }
         }
         return null;
     }
 
-    private static function season_term_payload( $term, $episode_count = null ) {
+    private static function season_number_is_year_code( $season_number ) {
+        if ( null === $season_number ) { return false; }
+        if ( 4 === strlen( (string) $season_number ) ) { return true; }
+        $n = (int) $season_number;
+        return $n >= 20 && $n <= 80;
+    }
+
+    private static function episode_original_air_year( $post_id ) {
+        $post = get_post( (int) $post_id );
+        if ( ! $post || 'publish' !== $post->post_status ) { return null; }
+        $content = self::parse_content( $post->post_content );
+        $title = self::parse_title( get_the_title( $post ) );
+        $air = ! empty( $content['original_air_date'] ) ? $content['original_air_date'] : $title['original_air_date'];
+        if ( ! is_string( $air ) || ! preg_match( '/^(\\d{4})-\\d{2}-\\d{2}$/', $air, $m ) ) { return null; }
+        return (int) $m[1];
+    }
+
+    private static function season_term_payload( $term, $episode_count = null, $derived_year = null, $unknown_year = false ) {
         $season_number = self::season_number_from_term( $term );
         $year = null;
         $label = $term->name;
+        $key = $term->slug;
+        $slug = $term->slug;
+        $id = (int) $term->term_id;
 
-        if ( null !== $season_number ) {
+        if ( $unknown_year ) {
+            $label = 'Unknown';
+            $key .= '--year-unknown';
+            $slug = $key;
+            $id = ( $id * 10000 );
+        } elseif ( null !== $derived_year ) {
+            $year = (int) $derived_year;
+            $label = (string) $year;
+            $key .= '--year-' . $year;
+            $slug = $key;
+            $id = ( $id * 10000 ) + $year;
+        } elseif ( null !== $season_number ) {
             if ( '00' === $season_number || '0000' === $season_number ) {
                 $label = 'Unknown';
-            } else {
-                $year = 4 === strlen( $season_number ) ? (int) $season_number : 1900 + (int) $season_number;
+            } elseif ( self::season_number_is_year_code( $season_number ) ) {
+                $year = 4 === strlen( (string) $season_number ) ? (int) $season_number : 1900 + (int) $season_number;
                 $label = (string) $year;
             }
         }
 
         return array(
-            'id' => (int) $term->term_id,
-            'key' => $term->slug,
-            'slug' => $term->slug,
+            'id' => $id,
+            'key' => $key,
+            'slug' => $slug,
             'source_name' => $term->name,
             'season' => null === $season_number ? null : (int) $season_number,
             'year' => $year,
@@ -516,12 +562,37 @@ final class Golden_Replay_API {
             if ( ! self::is_season_term( $term ) ) { continue; }
             $term_ids = get_objects_in_term( (int) $term->term_id, 'category' );
             if ( is_wp_error( $term_ids ) ) { continue; }
-            $count = 0;
+
+            $matching_ids = array();
             foreach ( $term_ids as $id ) {
-                if ( isset( $series_set[ (int) $id ] ) ) { $count++; }
+                if ( isset( $series_set[ (int) $id ] ) ) { $matching_ids[] = (int) $id; }
             }
-            if ( 0 === $count ) { continue; }
-            $items[] = self::season_term_payload( $term, $count );
+            if ( ! $matching_ids ) { continue; }
+
+            $season_number = self::season_number_from_term( $term );
+            if ( null !== $season_number && '00' !== $season_number && '0000' !== $season_number && ! self::season_number_is_year_code( $season_number ) ) {
+                $year_counts = array();
+                $unknown_count = 0;
+                foreach ( $matching_ids as $id ) {
+                    $year = self::episode_original_air_year( $id );
+                    if ( null === $year ) {
+                        $unknown_count++;
+                    } else {
+                        if ( ! isset( $year_counts[ $year ] ) ) { $year_counts[ $year ] = 0; }
+                        $year_counts[ $year ]++;
+                    }
+                }
+                ksort( $year_counts, SORT_NUMERIC );
+                foreach ( $year_counts as $year => $count ) {
+                    $items[] = self::season_term_payload( $term, $count, (int) $year );
+                }
+                if ( $unknown_count > 0 ) {
+                    $items[] = self::season_term_payload( $term, $unknown_count, null, true );
+                }
+                continue;
+            }
+
+            $items[] = self::season_term_payload( $term, count( $matching_ids ) );
         }
 
         usort( $items, function( $a, $b ) {
@@ -540,6 +611,25 @@ final class Golden_Replay_API {
         if ( ! $term || is_wp_error( $term ) ) { return null; }
         if ( (int) $term->parent !== (int) $parent->term_id ) { return null; }
         return self::is_season_term( $term ) ? $term : null;
+    }
+
+    private static function resolve_season_request( $parent, $season_slug ) {
+        $direct = self::find_direct_season_term( $parent, $season_slug );
+        if ( $direct ) {
+            return array( 'term' => $direct, 'year' => null, 'unknown_year' => false );
+        }
+
+        if ( preg_match( '/^(.*)--year-(\\d{4}|unknown)$/', $season_slug, $m ) ) {
+            $term = self::find_direct_season_term( $parent, $m[1] );
+            if ( ! $term ) { return null; }
+            return array(
+                'term' => $term,
+                'year' => 'unknown' === $m[2] ? null : (int) $m[2],
+                'unknown_year' => 'unknown' === $m[2],
+            );
+        }
+
+        return null;
     }
 
     public static function handle_post_change( $post_id, $post, $update ) {
