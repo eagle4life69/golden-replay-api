@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.10
+ * Version: 0.1.11
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -12,7 +12,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'GRAPI_VERSION', '0.1.10' );
+define( 'GRAPI_VERSION', '0.1.11' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -668,6 +668,22 @@ final class Golden_Replay_API {
         $text = preg_replace( "/\\r\\n?|\\x{2028}|\\x{2029}/u", "\n", $text );
         $lines = array_values( array_filter( array_map( 'trim', explode( "\n", $text ) ), 'strlen' ) );
         $r = array( 'description' => null, 'original_air_date' => null, 'show' => null, 'credits' => array() );
+
+        // Existing show notes place an optional episode description before
+        // "Original Air Date:". Capture that leading text without requiring
+        // a visible "Description:" label in the WordPress post.
+        foreach ( $lines as $index => $line ) {
+            if ( 0 !== stripos( $line, 'Original Air Date:' ) ) { continue; }
+            if ( $index > 0 ) {
+                $description_lines = array_slice( $lines, 0, $index );
+                if ( $description_lines && 0 !== stripos( $description_lines[0], 'Description:' ) ) {
+                    $description = sanitize_textarea_field( implode( "\n", $description_lines ) );
+                    if ( '' !== $description ) { $r['description'] = $description; }
+                }
+            }
+            break;
+        }
+
         $types = array(
             'Stars:' => 'star', 'Star:' => 'star', 'Special Guests:' => 'special_guest', 'Special Guest:' => 'special_guest',
             'Writer:' => 'writer', 'Writers:' => 'writer', 'Producer:' => 'producer', 'Producers:' => 'producer',
