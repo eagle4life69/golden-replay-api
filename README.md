@@ -4,7 +4,7 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 
 ## Current Version
 
-**0.1.6**
+**0.1.7**
 
 ## Current API Endpoints
 
@@ -15,6 +15,20 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 ```
 
 All endpoints expose information derived only from published WordPress posts.
+
+## v0.1.7 Catalog Performance
+
+Version 0.1.7 changes the genre and series catalog cache from short-lived five-minute transients to persistent prebuilt WordPress options.
+
+Normal API requests return the existing catalog immediately. Catalog records store a build timestamp and generation number. Post saves/deletes and category/tag changes advance the catalog generation and schedule a background rebuild through WP-Cron rather than deleting the existing catalog and forcing the next API caller to rebuild it.
+
+A 24-hour maximum cache age provides a safety refresh. Stale catalogs continue to be served while a rebuild is scheduled, providing stale-while-revalidate behavior.
+
+The expensive catalog builder itself is unchanged in this release; the performance improvement comes from moving that work away from ordinary cached API requests.
+
+On a brand-new installation or after the v0.1.7 cache-key change, the first request for a catalog that has never been built can still be slow because it must create the initial cache once. Subsequent requests use the persistent cache.
+
+A rebuild lock prevents overlapping scheduled catalog rebuild jobs.
 
 ## v0.1.6 Series Normalization
 
@@ -28,32 +42,7 @@ Known aliases currently include:
 - `Wild Bill Hickok` and `Adventures of Wild Bill Hickok` -> `Adventures of Wild Bill Hickok`
 - `Grand Old Opry` and `Grand Ole Opry` -> `Grand Ole Opry`
 
-Each normalized series now has a stable application-facing `key`/canonical slug independent of source-local WordPress term IDs. Source taxonomy provenance remains available through `id`, `source_slug`, and `source_terms`.
-
-Example:
-
-```json
-{
-  "id": 820,
-  "key": "the-lone-ranger",
-  "name": "The Lone Ranger",
-  "slug": "the-lone-ranger",
-  "source_slug": "the_lone_ranger",
-  "source_terms": [
-    {"id": 820, "name": "The Lone Ranger", "slug": "the_lone_ranger"},
-    {"id": 13, "name": "Lone Ranger", "slug": "lone_ranger"}
-  ],
-  "match_type": "primary",
-  "matching_episode_count": 1942,
-  "primary_episode_count": 1940
-}
-```
-
-Counts in the example are illustrative; live counts are derived from published source data.
-
-The episode endpoint also returns the normalized series identity while retaining source taxonomy fields.
-
-The `/series` cache key was advanced for v0.1.6 so older v0.1.5 cached groupings cannot mask the normalization changes after upgrade.
+Each normalized series has a stable application-facing `key` independent of source-local WordPress term IDs. Source taxonomy provenance remains available through `id`, `source_slug`, and `source_terms`.
 
 ## v0.1.5 Series Catalog
 
@@ -64,8 +53,6 @@ Each series includes matching and primary episode counts. A primary match takes 
 ## v0.1.4 Genre Catalog
 
 `/wp-json/golden-replay/v1/genres` returns recognized genres with published episodes. `episode_count` includes primary-category and secondary-tag discovery matches; `primary_episode_count` includes primary-category matches only.
-
-Genre results are cached for five minutes.
 
 ## Taxonomy Model
 
@@ -107,7 +94,7 @@ The public API is intentionally read-only and narrowly scoped. Only published po
 
 The plugin includes the existing native GitHub release updater in `github-updater.php`. Beginning with version 0.1.2, the updater preserves the installed plugin directory so activation and automatic-update preferences remain stable across GitHub release updates.
 
-A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.6`.
+A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.7`.
 
 ## Development Workflow
 
@@ -127,7 +114,7 @@ WordPress detects the newer release
 
 ## Current Development Status
 
-Version 0.1.6 normalizes series identity. The next catalog step is the filtered episode-list endpoint that preserves selected genre and canonical-series context.
+Version 0.1.7 improves catalog response performance by persistently caching generated catalogs and rebuilding stale data asynchronously. The next catalog step is the filtered episode-list endpoint that preserves selected genre and canonical-series context.
 
 ## Publisher
 
