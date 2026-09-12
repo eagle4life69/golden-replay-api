@@ -259,7 +259,7 @@ final class Golden_Replay_API {
         $ids = self::sort_episode_ids( $ids, $sort_values, $order );
 
         $page = max( 1, absint( $request->get_param( 'page' ) ) );
-        $per_page = min( 100, max( 1, absint( $request->get_param( 'per_page' ) ) );
+        $per_page = min( 100, max( 1, absint( $request->get_param( 'per_page' ) ) ) );
         $total = count( $ids );
         $page_ids = array_slice( $ids, ( $page - 1 ) * $per_page, $per_page );
         $episodes = array();
