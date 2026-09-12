@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.5
+ * Version: 0.1.6
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -12,7 +12,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'GRAPI_VERSION', '0.1.5' );
+define( 'GRAPI_VERSION', '0.1.6' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -67,7 +67,7 @@ final class Golden_Replay_API {
         $genre_slug = sanitize_title( $request->get_param( 'genre' ) );
         $genre = self::canonical_genre_definition( $genre_slug );
         if ( ! $genre ) { return new WP_Error( 'golden_replay_invalid_genre', 'Invalid genre.', array( 'status' => 400 ) ); }
-        $cache_key = 'grapi_series_v1_' . md5( $genre_slug );
+        $cache_key = 'grapi_series_v2_' . md5( $genre_slug );
         $series = get_transient( $cache_key );
         if ( false === $series ) { $series = self::build_series_catalog( $genre ); set_transient( $cache_key, $series, 5 * MINUTE_IN_SECONDS ); }
         return rest_ensure_response( array(
@@ -129,8 +129,40 @@ final class Golden_Replay_API {
     private static function duration_to_seconds($d){$d=trim((string)$d);if(''===$d)return null;if(ctype_digit($d))return(int)$d;$p=array_map('intval',explode(':',$d));if(2===count($p))return$p[0]*60+$p[1];if(3===count($p))return$p[0]*3600+$p[1]*60+$p[2];return null;}
     private static function format_duration($s){$s=max(0,(int)$s);$h=intdiv($s,3600);$m=intdiv($s%3600,60);$x=$s%60;return$h>0?sprintf('%d:%02d:%02d',$h,$m,$x):sprintf('%d:%02d',$m,$x);}
 
-    private static function build_series_from_show($show,WP_Post $post){$show=sanitize_text_field(trim((string)$show));if(''===$show)return null;$key=self::normalize_taxonomy_label($show);$tags=get_the_tags($post->ID);if($tags){foreach($tags as $tag){if($key===self::normalize_taxonomy_label($tag->name)||$key===self::normalize_taxonomy_label($tag->slug))return array('id'=>(int)$tag->term_id,'name'=>$show,'slug'=>$tag->slug);}}return array('id'=>null,'name'=>$show,'slug'=>sanitize_title($show));}
-    private static function normalize_taxonomy_label($v){$v=html_entity_decode(wp_strip_all_tags((string)$v),ENT_QUOTES|ENT_HTML5,'UTF-8');$v=str_replace(array('_','-'),' ',$v);$v=strtolower($v);return(string)preg_replace('/[^a-z0-9]+/','',$v);}
+    private static function clean_series_name($show){
+        $show=html_entity_decode(wp_strip_all_tags((string)$show),ENT_QUOTES|ENT_HTML5,'UTF-8');
+        $show=preg_replace('/[\x{00A0}\x{2000}-\x{200B}\x{202F}\x{205F}\x{3000}]+/u',' ',$show);
+        $show=preg_replace('/\s+/u',' ',trim($show));
+        while(0===stripos($show,'Show:')){$show=preg_replace('/^Show:\s*/i','',$show,1);$show=preg_replace('/\s+/u',' ',trim($show));}
+        return sanitize_text_field($show);
+    }
+
+    private static function series_aliases(){
+        return array(
+            'lone-ranger'=>array('name'=>'The Lone Ranger','key'=>'the-lone-ranger'),
+            'the-lone-ranger'=>array('name'=>'The Lone Ranger','key'=>'the-lone-ranger'),
+            'wild-bill-hickok'=>array('name'=>'Adventures of Wild Bill Hickok','key'=>'adventures-of-wild-bill-hickok'),
+            'adventures-of-wild-bill-hickok'=>array('name'=>'Adventures of Wild Bill Hickok','key'=>'adventures-of-wild-bill-hickok'),
+            'grand-old-opry'=>array('name'=>'Grand Ole Opry','key'=>'grand-ole-opry'),
+            'grand-ole-opry'=>array('name'=>'Grand Ole Opry','key'=>'grand-ole-opry'),
+        );
+    }
+
+    private static function canonicalize_series($show){
+        $clean=self::clean_series_name($show); if(''===$clean)return null;
+        $slug=sanitize_title($clean); $aliases=self::series_aliases();
+        if(isset($aliases[$slug]))return array('name'=>$aliases[$slug]['name'],'key'=>$aliases[$slug]['key'],'slug'=>$aliases[$slug]['key']);
+        return array('name'=>$clean,'key'=>$slug,'slug'=>$slug);
+    }
+
+    private static function build_series_from_show($show,WP_Post $post){
+        $clean=self::clean_series_name($show);$canonical=self::canonicalize_series($clean);if(!$canonical)return null;
+        $source_id=null;$source_name=$clean;$source_slug=sanitize_title($clean);$key=self::normalize_taxonomy_label($clean);$canonical_key=self::normalize_taxonomy_label($canonical['name']);
+        $tags=get_the_tags($post->ID);if($tags){foreach($tags as $tag){$tag_name_key=self::normalize_taxonomy_label($tag->name);$tag_slug_key=self::normalize_taxonomy_label($tag->slug);if($key===$tag_name_key||$key===$tag_slug_key||$canonical_key===$tag_name_key||$canonical_key===$tag_slug_key){$source_id=(int)$tag->term_id;$source_name=$tag->name;$source_slug=$tag->slug;break;}}}
+        return array('id'=>$source_id,'key'=>$canonical['key'],'name'=>$canonical['name'],'slug'=>$source_slug,'source_name'=>$source_name,'source_slug'=>$source_slug);
+    }
+
+    private static function normalize_taxonomy_label($v){$v=self::clean_series_name($v);$v=str_replace(array('_','-'),' ',$v);$v=strtolower($v);return(string)preg_replace('/[^a-z0-9]+/','',$v);}
 
     private static function genre_definitions(){return array(
         'western-podcast'=>array('name'=>'Westerns','slug'=>'westerns'),'western'=>array('name'=>'Westerns','slug'=>'westerns'),'westerns'=>array('name'=>'Westerns','slug'=>'westerns'),
@@ -149,10 +181,13 @@ final class Golden_Replay_API {
         $tax_query=self::genre_tax_query($genre,true,true); if(empty($tax_query))return array();
         $query=new WP_Query(array('post_type'=>'post','post_status'=>'publish','fields'=>'ids','posts_per_page'=>-1,'orderby'=>'ID','order'=>'ASC','ignore_sticky_posts'=>true,'no_found_rows'=>true,'update_post_meta_cache'=>false,'tax_query'=>$tax_query));
         $series=array();
-        foreach($query->posts as $post_id){$post=get_post($post_id);if(!$post)continue;$content=self::parse_content($post->post_content);$s=self::build_series_from_show($content['show'],$post);if(!$s||empty($s['name']))continue;$key=self::normalize_taxonomy_label($s['name']);if(''===$key)continue;$primary=self::detect_primary_genre($post);$is_primary=is_array($primary)&&isset($primary['slug'])&&$genre['slug']===$primary['slug'];
-            if(!isset($series[$key]))$series[$key]=array('id'=>$s['id'],'name'=>$s['name'],'slug'=>sanitize_title($s['name']),'source_slug'=>$s['slug'],'match_type'=>$is_primary?'primary':'episode','matching_episode_count'=>0,'primary_episode_count'=>0);
-            $series[$key]['matching_episode_count']++; if($is_primary){$series[$key]['primary_episode_count']++;$series[$key]['match_type']='primary';} if(null===$series[$key]['id']&&null!==$s['id'])$series[$key]['id']=$s['id'];
+        foreach($query->posts as $post_id){
+            $post=get_post($post_id);if(!$post)continue;$content=self::parse_content($post->post_content);$s=self::build_series_from_show($content['show'],$post);if(!$s||empty($s['name'])||empty($s['key']))continue;$key=$s['key'];$primary=self::detect_primary_genre($post);$is_primary=is_array($primary)&&isset($primary['slug'])&&$genre['slug']===$primary['slug'];
+            if(!isset($series[$key]))$series[$key]=array('id'=>$s['id'],'key'=>$key,'name'=>$s['name'],'slug'=>$key,'source_slug'=>$s['source_slug'],'source_terms'=>array(),'match_type'=>$is_primary?'primary':'episode','matching_episode_count'=>0,'primary_episode_count'=>0);
+            $term_key=(string)$s['id'].'|'.$s['source_slug'];if(!isset($series[$key]['source_terms'][$term_key]))$series[$key]['source_terms'][$term_key]=array('id'=>$s['id'],'name'=>$s['source_name'],'slug'=>$s['source_slug']);
+            $series[$key]['matching_episode_count']++;if($is_primary){$series[$key]['primary_episode_count']++;$series[$key]['match_type']='primary';}if(null===$series[$key]['id']&&null!==$s['id']){$series[$key]['id']=$s['id'];$series[$key]['source_slug']=$s['source_slug'];}
         }
+        foreach($series as &$item){$item['source_terms']=array_values($item['source_terms']);}unset($item);
         uasort($series,function($a,$b){return strcasecmp($a['name'],$b['name']);}); return array_values($series);
     }
 
