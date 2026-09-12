@@ -4,7 +4,7 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 
 ## Current Version
 
-**0.1.8**
+**0.1.10**
 
 ## Current API Endpoints
 
@@ -12,10 +12,26 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 /wp-json/golden-replay/v1/episode/{id}
 /wp-json/golden-replay/v1/genres
 /wp-json/golden-replay/v1/series?genre={genre-slug}
+/wp-json/golden-replay/v1/seasons?genre={genre-slug}&series={series-key}
 /wp-json/golden-replay/v1/episodes?genre={genre-slug}&series={series-key}
+/wp-json/golden-replay/v1/episodes?genre={genre-slug}&series={series-key}&season={season-slug}
 ```
 
 All endpoints expose information derived only from published WordPress posts.
+
+## v0.1.10 Season / Year Browsing
+
+Version 0.1.10 adds season/year discovery so long-running programs can be browsed without loading thousands of episodes into the client.
+
+`/seasons` requires the canonical genre slug and canonical series key returned by the catalog endpoints. Golden Replay discovers a series' WordPress show category and reads its direct child categories that follow the existing `Season ##` naming convention. The prefix is not hard-coded, so categories such as `TCK Season 53` and `LR Season 53` are handled by their parent/child relationship rather than by the show-specific prefix.
+
+Two-digit season values are presented as twentieth-century years. For example, `Season 52` is returned with the label `1952` and `Season 53` with `1953`. `Season 00` is the existing convention for episodes without a known year and is returned with the app-facing label `Unknown`. Known years are sorted oldest to newest and `Unknown` is placed last.
+
+The existing `/episodes` endpoint now accepts an optional `season` parameter containing the season category slug returned by `/seasons`. When supplied, only episodes belonging to that direct child season category are returned. Air-date ordering and pagination are then applied to that filtered set. When `season` is omitted, the v0.1.9 series behavior remains unchanged for backward compatibility.
+
+## v0.1.9 Historical Episode Ordering
+
+Version 0.1.9 orders episode results by `original_air_date` across the complete selected set before pagination. Episodes with known air dates are ordered chronologically; episodes without a known air date are placed after dated episodes and use title ordering as the fallback.
 
 ## v0.1.8 Filtered Episode Catalog
 
@@ -53,6 +69,21 @@ Each normalized series has a stable application-facing `key` independent of sour
 
 The historical radio series is read from the episode content's `Show:` value. Golden Replay cleans and canonicalizes that value, then attempts to match it to an assigned WordPress tag for source provenance.
 
+### Show Category and Seasons
+
+A show's WordPress category may contain direct child season categories, for example:
+
+```text
+Western Podcast
+└── Cisco Kid
+    ├── TCK Season 00
+    ├── TCK Season 52
+    ├── TCK Season 53
+    └── TCK Season 54
+```
+
+The category hierarchy is the source of truth for season/year browsing. Season child categories are never inferred solely from the prefix. The episode's `original_air_date` remains the source used to order episodes within the selected season when available.
+
 ### Primary Genre
 
 The primary browse genre comes from a recognized WordPress category. Current recognized genres include Westerns, Mystery, Drama, Comedy, Crime, Detective, Adventure, Horror, and Science Fiction.
@@ -79,7 +110,7 @@ The public API is intentionally read-only and narrowly scoped. Only published po
 
 The plugin includes the existing native GitHub release updater in `github-updater.php`. The updater preserves the installed plugin directory so activation and automatic-update preferences remain stable across GitHub release updates.
 
-A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.8`.
+A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.10`.
 
 ## Development Workflow
 
@@ -99,7 +130,7 @@ WordPress detects the newer release
 
 ## Current Development Status
 
-Version 0.1.8 completes the initial read-only browse API needed for `Genres -> Series -> Episodes -> Episode detail/audio`. The next milestone is wiring these endpoints into the first SwiftUI Golden Replay prototype.
+Version 0.1.10 adds the server-side year/season layer needed for the SwiftUI browse flow: `Genres -> Series -> Year -> Episodes -> Episode detail/audio`. Programs without season child categories continue to support the existing direct series-to-episodes behavior.
 
 ## Publisher
 
