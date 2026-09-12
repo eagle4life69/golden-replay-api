@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.6
+ * Version: 0.1.7
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -12,7 +12,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'GRAPI_VERSION', '0.1.6' );
+define( 'GRAPI_VERSION', '0.1.7' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -21,8 +21,15 @@ if ( file_exists( $grapi_updater ) ) { require_once $grapi_updater; }
 final class Golden_Replay_API {
     const VERSION = GRAPI_VERSION;
     const NAMESPACE = 'golden-replay/v1';
+    const CACHE_MAX_AGE = 86400;
 
-    public static function init() { add_action( 'rest_api_init', array( __CLASS__, 'register_routes' ) ); }
+    public static function init() {
+        add_action( 'rest_api_init', array( __CLASS__, 'register_routes' ) );
+        add_action( 'save_post', array( __CLASS__, 'handle_post_change' ), 10, 3 );
+        add_action( 'deleted_post', array( __CLASS__, 'handle_deleted_post' ), 10, 2 );
+        add_action( 'set_object_terms', array( __CLASS__, 'handle_term_change' ), 10, 6 );
+        add_action( 'grapi_rebuild_catalog_cache', array( __CLASS__, 'rebuild_catalog_cache' ) );
+    }
 
     public static function register_routes() {
         register_rest_route( self::NAMESPACE, '/episode/(?P<id>\d+)', array(
@@ -57,9 +64,14 @@ final class Golden_Replay_API {
     }
 
     public static function get_genres() {
-        $cache_key = 'grapi_genres_v1';
-        $genres = get_transient( $cache_key );
-        if ( false === $genres ) { $genres = self::build_genres_payload(); set_transient( $cache_key, $genres, 5 * MINUTE_IN_SECONDS ); }
+        $cached = self::get_catalog_option( 'grapi_genres_catalog_v2' );
+        if ( null === $cached ) {
+            $genres = self::build_genres_payload();
+            self::set_catalog_option( 'grapi_genres_catalog_v2', $genres );
+        } else {
+            $genres = $cached['data'];
+            self::maybe_schedule_catalog_refresh( $cached );
+        }
         return rest_ensure_response( array( 'source' => self::detect_source(), 'genres' => $genres ) );
     }
 
@@ -67,14 +79,95 @@ final class Golden_Replay_API {
         $genre_slug = sanitize_title( $request->get_param( 'genre' ) );
         $genre = self::canonical_genre_definition( $genre_slug );
         if ( ! $genre ) { return new WP_Error( 'golden_replay_invalid_genre', 'Invalid genre.', array( 'status' => 400 ) ); }
-        $cache_key = 'grapi_series_v2_' . md5( $genre_slug );
-        $series = get_transient( $cache_key );
-        if ( false === $series ) { $series = self::build_series_catalog( $genre ); set_transient( $cache_key, $series, 5 * MINUTE_IN_SECONDS ); }
+
+        $option_key = self::series_cache_key( $genre_slug );
+        $cached = self::get_catalog_option( $option_key );
+        if ( null === $cached ) {
+            $series = self::build_series_catalog( $genre );
+            self::set_catalog_option( $option_key, $series );
+        } else {
+            $series = $cached['data'];
+            self::maybe_schedule_catalog_refresh( $cached );
+        }
+
         return rest_ensure_response( array(
             'source' => self::detect_source(),
             'genre' => array( 'name' => $genre['name'], 'slug' => $genre['slug'] ),
             'series' => $series,
         ) );
+    }
+
+    public static function handle_post_change( $post_id, $post, $update ) {
+        if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) { return; }
+        if ( ! $post || 'post' !== $post->post_type ) { return; }
+        self::invalidate_catalog_generation();
+    }
+
+    public static function handle_deleted_post( $post_id, $post ) {
+        if ( $post && 'post' === $post->post_type ) { self::invalidate_catalog_generation(); }
+    }
+
+    public static function handle_term_change( $object_id, $terms, $tt_ids, $taxonomy, $append, $old_tt_ids ) {
+        if ( 'category' !== $taxonomy && 'post_tag' !== $taxonomy ) { return; }
+        if ( 'post' !== get_post_type( $object_id ) ) { return; }
+        self::invalidate_catalog_generation();
+    }
+
+    private static function invalidate_catalog_generation() {
+        $generation = (int) get_option( 'grapi_catalog_generation', 1 );
+        update_option( 'grapi_catalog_generation', $generation + 1, false );
+        self::schedule_catalog_refresh();
+    }
+
+    private static function current_catalog_generation() {
+        return max( 1, (int) get_option( 'grapi_catalog_generation', 1 ) );
+    }
+
+    private static function series_cache_key( $genre_slug ) {
+        return 'grapi_series_catalog_v3_' . md5( sanitize_title( $genre_slug ) );
+    }
+
+    private static function get_catalog_option( $key ) {
+        $value = get_option( $key, null );
+        if ( ! is_array( $value ) || ! array_key_exists( 'data', $value ) || empty( $value['built_at'] ) || empty( $value['generation'] ) ) { return null; }
+        return $value;
+    }
+
+    private static function set_catalog_option( $key, $data ) {
+        update_option( $key, array(
+            'generation' => self::current_catalog_generation(),
+            'built_at' => time(),
+            'data' => $data,
+        ), false );
+    }
+
+    private static function maybe_schedule_catalog_refresh( $cached ) {
+        $stale_generation = (int) $cached['generation'] !== self::current_catalog_generation();
+        $stale_age = ( time() - (int) $cached['built_at'] ) >= self::CACHE_MAX_AGE;
+        if ( $stale_generation || $stale_age ) { self::schedule_catalog_refresh(); }
+    }
+
+    private static function schedule_catalog_refresh() {
+        if ( ! wp_next_scheduled( 'grapi_rebuild_catalog_cache' ) ) {
+            wp_schedule_single_event( time() + 15, 'grapi_rebuild_catalog_cache' );
+        }
+    }
+
+    public static function rebuild_catalog_cache() {
+        if ( get_transient( 'grapi_catalog_rebuild_lock' ) ) { return; }
+        set_transient( 'grapi_catalog_rebuild_lock', 1, 10 * MINUTE_IN_SECONDS );
+
+        self::set_catalog_option( 'grapi_genres_catalog_v2', self::build_genres_payload() );
+        $seen = array();
+        foreach ( self::genre_definitions() as $def ) {
+            if ( isset( $seen[ $def['slug'] ] ) ) { continue; }
+            $seen[ $def['slug'] ] = true;
+            $genre = self::canonical_genre_definition( $def['slug'] );
+            if ( ! $genre ) { continue; }
+            self::set_catalog_option( self::series_cache_key( $genre['slug'] ), self::build_series_catalog( $genre ) );
+        }
+
+        delete_transient( 'grapi_catalog_rebuild_lock' );
     }
 
     private static function build_episode_payload( WP_Post $post ) {
