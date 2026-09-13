@@ -4,7 +4,7 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 
 ## Current Version
 
-**0.1.10**
+**0.1.13**
 
 ## Current API Endpoints
 
@@ -19,15 +19,38 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 
 All endpoints expose information derived only from published WordPress posts.
 
+## v0.1.13 Series Counts and Derived Year Browsing
+
+Version 0.1.13 fixes several issues exposed by programs such as **Lux Radio Theatre** that use true ordinal season categories while also having episodes identified through series tags and historical `Show:` values.
+
+- Primary-series episode counts now include tag-discovered episodes used by the `all_series` selection mode.
+- Derived year browsing is built from the complete selected series episode set instead of creating separate year rows for each ordinal season category.
+- Episodes that belong to the selected series but are not assigned to a child season category are still included in the appropriate derived year.
+- Derived year slugs use sanitizer-safe values such as `gr-year-1939` and `gr-year-unknown`.
+- `/seasons` counts and `/episodes?season=...` now use the same selected episode set, so a displayed year count should match the episodes returned when that year is opened.
+- Direct taxonomy-season behavior remains unchanged for true year-coded season categories.
+
+## v0.1.12 Ordinal Seasons and Year Codes
+
+Version 0.1.12 distinguishes true season numbers from abbreviated year codes.
+
+Two-digit season values from **20 through 80** are treated as twentieth-century year codes. For example, `Season 53` is presented as `1953` and `Season 80` as `1980`.
+
+Season values outside that range are treated as ordinal season numbers. Their browse years are derived from each episode's `original_air_date`, allowing a single ordinal season to span more than one calendar year. `Season 00` remains the convention for `Unknown`.
+
+## v0.1.11 Episode Description Parsing
+
+Version 0.1.11 adds description fallback parsing for the existing WordPress authoring format.
+
+If descriptive text appears before `Original Air Date:`, that leading text is returned as the episode `description`. If `Original Air Date:` is the first meaningful line, `description` remains null. An explicit `Description:` label is still supported but is not required.
+
 ## v0.1.10 Season / Year Browsing
 
 Version 0.1.10 adds season/year discovery so long-running programs can be browsed without loading thousands of episodes into the client.
 
 `/seasons` requires the canonical genre slug and canonical series key returned by the catalog endpoints. Golden Replay discovers a series' WordPress show category and reads its direct child categories that follow the existing `Season ##` naming convention. The prefix is not hard-coded, so categories such as `TCK Season 53` and `LR Season 53` are handled by their parent/child relationship rather than by the show-specific prefix.
 
-Two-digit season values are presented as twentieth-century years. For example, `Season 52` is returned with the label `1952` and `Season 53` with `1953`. `Season 00` is the existing convention for episodes without a known year and is returned with the app-facing label `Unknown`. Known years are sorted oldest to newest and `Unknown` is placed last.
-
-The existing `/episodes` endpoint now accepts an optional `season` parameter containing the season category slug returned by `/seasons`. When supplied, only episodes belonging to that direct child season category are returned. Air-date ordering and pagination are then applied to that filtered set. When `season` is omitted, the v0.1.9 series behavior remains unchanged for backward compatibility.
+The existing `/episodes` endpoint accepts an optional `season` parameter containing the season slug returned by `/seasons`. When supplied, only episodes for that browse selection are returned. Air-date ordering and pagination are then applied to that filtered set. When `season` is omitted, the series behavior remains unchanged for backward compatibility.
 
 ## v0.1.9 Historical Episode Ordering
 
@@ -67,7 +90,7 @@ Each normalized series has a stable application-facing `key` independent of sour
 
 ### Series
 
-The historical radio series is read from the episode content's `Show:` value. Golden Replay cleans and canonicalizes that value, then attempts to match it to an assigned WordPress tag for source provenance.
+The historical radio series is read from the episode content's `Show:` value and normalized into a canonical series key. Golden Replay also uses matching WordPress tags as source provenance and, for primary-series browsing, to discover the complete published series set.
 
 ### Show Category and Seasons
 
@@ -82,7 +105,7 @@ Western Podcast
     └── TCK Season 54
 ```
 
-The category hierarchy is the source of truth for season/year browsing. Season child categories are never inferred solely from the prefix. The episode's `original_air_date` remains the source used to order episodes within the selected season when available.
+For year-coded season structures, the category hierarchy remains the source of truth. For ordinal season structures, Golden Replay derives browse years from the selected series episodes' `original_air_date` values so episodes are grouped by calendar year even when a traditional season spans multiple years.
 
 ### Primary Genre
 
@@ -110,7 +133,7 @@ The public API is intentionally read-only and narrowly scoped. Only published po
 
 The plugin includes the existing native GitHub release updater in `github-updater.php`. The updater preserves the installed plugin directory so activation and automatic-update preferences remain stable across GitHub release updates.
 
-A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.10`.
+A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.13`.
 
 ## Development Workflow
 
@@ -130,7 +153,7 @@ WordPress detects the newer release
 
 ## Current Development Status
 
-Version 0.1.10 adds the server-side year/season layer needed for the SwiftUI browse flow: `Genres -> Series -> Year -> Episodes -> Episode detail/audio`. Programs without season child categories continue to support the existing direct series-to-episodes behavior.
+Version 0.1.13 provides the server-side browse flow used by the SwiftUI client: `Genres -> Series -> Year -> Episodes -> Episode detail/audio`. Programs with valid year-coded season categories continue to browse by those categories, while ordinal-season programs can use calendar years derived from episode air dates. Programs without usable season/year browsing continue to support direct series-to-episodes requests.
 
 ## Publisher
 
