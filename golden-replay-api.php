@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.13
+ * Version: 0.1.14
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -12,7 +12,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'GRAPI_VERSION', '0.1.13' );
+define( 'GRAPI_VERSION', '0.1.14' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -675,8 +675,8 @@ final class Golden_Replay_API {
     }
 
     private static function current_catalog_generation() { return max( 1, (int) get_option( 'grapi_catalog_generation', 1 ) ); }
-    private static function series_cache_key( $slug ) { return 'grapi_series_catalog_v3_' . md5( sanitize_title( $slug ) ); }
-    private static function episode_index_cache_key( $slug ) { return 'grapi_episode_index_v2_' . md5( sanitize_title( $slug ) ); }
+    private static function series_cache_key( $slug ) { return 'grapi_series_catalog_v4_' . md5( sanitize_title( $slug ) ); }
+    private static function episode_index_cache_key( $slug ) { return 'grapi_episode_index_v3_' . md5( sanitize_title( $slug ) ); }
 
     private static function get_catalog_option( $key ) {
         $v = get_option( $key, null );
