@@ -1,0 +1,233 @@
+from pathlib import Path
+import re
+
+path = Path("golden-replay-api.php")
+text = path.read_text()
+
+text = text.replace(" * Version: 0.1.12", " * Version: 0.1.13", 1)
+text = text.replace("define( 'GRAPI_VERSION', '0.1.12' );", "define( 'GRAPI_VERSION', '0.1.13' );", 1)
+
+season_block_pattern = re.compile(
+    r"        \$season_response = null;\n.*?\n        \$order = 'desc' === strtolower\( \(string\) \$request->get_param\( 'order' \) \) \? 'desc' : 'asc';",
+    re.S,
+)
+season_block_replacement = """        $season_response = null;
+        $season_slug = sanitize_title( (string) $request->get_param( 'season' ) );
+        if ( '' !== $season_slug ) {
+            $parent = self::find_series_parent_category( $series_item, $ids );
+            if ( ! $parent ) {
+                return new WP_Error( 'golden_replay_season_parent_not_found', 'No season categories were found for this series.', array( 'status' => 404 ) );
+            }
+
+            $season_request = self::resolve_season_request( $parent, $season_slug );
+            if ( ! $season_request ) {
+                return new WP_Error( 'golden_replay_season_not_found', 'Season not found for the selected series.', array( 'status' => 404 ) );
+            }
+
+            if ( ! empty( $season_request['derived'] ) ) {
+                if ( ! empty( $season_request['unknown_year'] ) ) {
+                    $ids = array_values( array_filter( $ids, function( $id ) {
+                        return null === self::episode_original_air_year( (int) $id );
+                    } ) );
+                    $season_response = self::derived_year_payload( $parent, null, count( $ids ), true );
+                } else {
+                    $requested_year = (int) $season_request['year'];
+                    $ids = array_values( array_filter( $ids, function( $id ) use ( $requested_year ) {
+                        return $requested_year === self::episode_original_air_year( (int) $id );
+                    } ) );
+                    $season_response = self::derived_year_payload( $parent, $requested_year, count( $ids ) );
+                }
+            } else {
+                $season_term = $season_request['term'];
+                $season_post_ids = get_objects_in_term( (int) $season_term->term_id, 'category' );
+                if ( is_wp_error( $season_post_ids ) ) {
+                    $season_post_ids = array();
+                }
+                $season_post_ids = array_flip( array_map( 'intval', $season_post_ids ) );
+                $ids = array_values( array_filter( $ids, function( $id ) use ( $season_post_ids ) {
+                    return isset( $season_post_ids[ (int) $id ] );
+                } ) );
+                $season_response = self::season_term_payload( $season_term, count( $ids ) );
+            }
+        }
+
+        $order = 'desc' === strtolower( (string) $request->get_param( 'order' ) ) ? 'desc' : 'asc';"""
+text, count = season_block_pattern.subn(season_block_replacement, text, count=1)
+if count != 1:
+    raise SystemExit(f"Could not replace episode season block: {count}")
+
+old_guard = "            if ( empty( $payload['series']['key'] ) || $series_key !== $payload['series']['key'] ) { continue; }"
+new_guard = "            if ( 'genre_matches' === $mode && ( empty( $payload['series']['key'] ) || $series_key !== $payload['series']['key'] ) ) { continue; }"
+if old_guard not in text:
+    raise SystemExit("Could not find episode series guard")
+text = text.replace(old_guard, new_guard, 1)
+
+season_functions_pattern = re.compile(
+    r"    private static function season_term_payload\(.*?\n    private static function find_direct_season_term\(",
+    re.S,
+)
+season_functions_replacement = """    private static function season_term_payload( $term, $episode_count = null ) {
+        $season_number = self::season_number_from_term( $term );
+        $year = null;
+        $label = $term->name;
+
+        if ( null !== $season_number ) {
+            if ( '00' === $season_number || '0000' === $season_number ) {
+                $label = 'Unknown';
+            } elseif ( self::season_number_is_year_code( $season_number ) ) {
+                $year = 4 === strlen( (string) $season_number ) ? (int) $season_number : 1900 + (int) $season_number;
+                $label = (string) $year;
+            }
+        }
+
+        return array(
+            'id' => (int) $term->term_id,
+            'key' => $term->slug,
+            'slug' => $term->slug,
+            'source_name' => $term->name,
+            'season' => null === $season_number ? null : (int) $season_number,
+            'year' => $year,
+            'label' => $label,
+            'episode_count' => null === $episode_count ? (int) $term->count : (int) $episode_count,
+        );
+    }
+
+    private static function derived_year_payload( $parent, $year, $episode_count, $unknown = false ) {
+        $label = $unknown ? 'Unknown' : (string) (int) $year;
+        $slug = 'gr-year-' . ( $unknown ? 'unknown' : (string) (int) $year );
+        $id = ( (int) $parent->term_id * 10000 ) + ( $unknown ? 0 : (int) $year );
+
+        return array(
+            'id' => $id,
+            'key' => $slug,
+            'slug' => $slug,
+            'source_name' => $parent->name,
+            'season' => 0,
+            'year' => $unknown ? null : (int) $year,
+            'label' => $label,
+            'episode_count' => (int) $episode_count,
+        );
+    }
+
+    private static function parent_uses_derived_years( $parent ) {
+        $terms = get_terms( array(
+            'taxonomy' => 'category',
+            'parent' => (int) $parent->term_id,
+            'hide_empty' => false,
+        ) );
+        if ( is_wp_error( $terms ) || ! is_array( $terms ) ) { return false; }
+
+        foreach ( $terms as $term ) {
+            if ( ! self::is_season_term( $term ) ) { continue; }
+            $season_number = self::season_number_from_term( $term );
+            if ( null === $season_number || '00' === $season_number || '0000' === $season_number ) { continue; }
+            if ( ! self::season_number_is_year_code( $season_number ) ) { return true; }
+        }
+        return false;
+    }
+
+    private static function get_series_season_terms( $parent, $series_ids ) {
+        if ( self::parent_uses_derived_years( $parent ) ) {
+            $year_counts = array();
+            $unknown_count = 0;
+
+            foreach ( array_values( array_unique( array_map( 'intval', $series_ids ) ) ) as $id ) {
+                $year = self::episode_original_air_year( $id );
+                if ( null === $year ) {
+                    $unknown_count++;
+                    continue;
+                }
+                if ( ! isset( $year_counts[ $year ] ) ) { $year_counts[ $year ] = 0; }
+                $year_counts[ $year ]++;
+            }
+
+            ksort( $year_counts, SORT_NUMERIC );
+            $items = array();
+            foreach ( $year_counts as $year => $count ) {
+                $items[] = self::derived_year_payload( $parent, (int) $year, $count );
+            }
+            if ( $unknown_count > 0 ) {
+                $items[] = self::derived_year_payload( $parent, null, $unknown_count, true );
+            }
+            return $items;
+        }
+
+        $terms = get_terms( array(
+            'taxonomy' => 'category',
+            'parent' => (int) $parent->term_id,
+            'hide_empty' => false,
+        ) );
+        if ( is_wp_error( $terms ) || ! is_array( $terms ) ) { return array(); }
+
+        $series_set = array_flip( array_map( 'intval', $series_ids ) );
+        $items = array();
+
+        foreach ( $terms as $term ) {
+            if ( ! self::is_season_term( $term ) ) { continue; }
+            $term_ids = get_objects_in_term( (int) $term->term_id, 'category' );
+            if ( is_wp_error( $term_ids ) ) { continue; }
+            $count = 0;
+            foreach ( $term_ids as $id ) {
+                if ( isset( $series_set[ (int) $id ] ) ) { $count++; }
+            }
+            if ( 0 === $count ) { continue; }
+            $items[] = self::season_term_payload( $term, $count );
+        }
+
+        usort( $items, function( $a, $b ) {
+            $a_unknown = null === $a['year'];
+            $b_unknown = null === $b['year'];
+            if ( $a_unknown !== $b_unknown ) { return $a_unknown ? 1 : -1; }
+            if ( ! $a_unknown && $a['year'] !== $b['year'] ) { return $a['year'] <=> $b['year']; }
+            return strcasecmp( $a['source_name'], $b['source_name'] );
+        } );
+
+        return $items;
+    }
+
+    private static function find_direct_season_term("""
+text, count = season_functions_pattern.subn(season_functions_replacement, text, count=1)
+if count != 1:
+    raise SystemExit(f"Could not replace season functions: {count}")
+
+resolve_pattern = re.compile(
+    r"    private static function resolve_season_request\(.*?\n    public static function handle_post_change\(",
+    re.S,
+)
+resolve_replacement = """    private static function resolve_season_request( $parent, $season_slug ) {
+        if ( preg_match( '/^gr-year-(\\d{4}|unknown)$/', $season_slug, $m ) ) {
+            return array(
+                'derived' => true,
+                'term' => null,
+                'year' => 'unknown' === $m[1] ? null : (int) $m[1],
+                'unknown_year' => 'unknown' === $m[1],
+            );
+        }
+
+        $direct = self::find_direct_season_term( $parent, $season_slug );
+        if ( $direct ) {
+            return array( 'derived' => false, 'term' => $direct, 'year' => null, 'unknown_year' => false );
+        }
+
+        return null;
+    }
+
+    public static function handle_post_change("""
+text, count = resolve_pattern.subn(resolve_replacement, text, count=1)
+if count != 1:
+    raise SystemExit(f"Could not replace season resolver: {count}")
+
+old_catalog_tail = "        foreach ( $series as &$item ) { $item['source_terms'] = array_values( $item['source_terms'] ); }\n        unset( $item );"
+new_catalog_tail = """        foreach ( $series as $key => &$item ) {
+            $item['source_terms'] = array_values( $item['source_terms'] );
+            if ( 'primary' === $item['match_type'] ) {
+                $matching_ids = isset( $index[ $key ]['matching_post_ids'] ) ? $index[ $key ]['matching_post_ids'] : array();
+                $item['matching_episode_count'] = count( self::get_all_series_episode_ids( $item, $matching_ids ) );
+            }
+        }
+        unset( $item );"""
+if old_catalog_tail not in text:
+    raise SystemExit("Could not find series catalog tail")
+text = text.replace(old_catalog_tail, new_catalog_tail, 1)
+
+path.write_text(text)
