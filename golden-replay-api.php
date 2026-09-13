@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.12
+ * Version: 0.1.13
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -12,7 +12,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'GRAPI_VERSION', '0.1.12' );
+define( 'GRAPI_VERSION', '0.1.13' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -244,28 +244,29 @@ final class Golden_Replay_API {
                 return new WP_Error( 'golden_replay_season_not_found', 'Season not found for the selected series.', array( 'status' => 404 ) );
             }
 
-            $season_term = $season_request['term'];
-            $season_post_ids = get_objects_in_term( (int) $season_term->term_id, 'category' );
-            if ( is_wp_error( $season_post_ids ) ) {
-                $season_post_ids = array();
-            }
-            $season_post_ids = array_flip( array_map( 'intval', $season_post_ids ) );
-            $ids = array_values( array_filter( $ids, function( $id ) use ( $season_post_ids ) {
-                return isset( $season_post_ids[ (int) $id ] );
-            } ) );
-
-            if ( null !== $season_request['year'] ) {
-                $requested_year = (int) $season_request['year'];
-                $ids = array_values( array_filter( $ids, function( $id ) use ( $requested_year ) {
-                    return $requested_year === self::episode_original_air_year( (int) $id );
-                } ) );
-                $season_response = self::season_term_payload( $season_term, count( $ids ), $requested_year );
-            } elseif ( $season_request['unknown_year'] ) {
-                $ids = array_values( array_filter( $ids, function( $id ) {
-                    return null === self::episode_original_air_year( (int) $id );
-                } ) );
-                $season_response = self::season_term_payload( $season_term, count( $ids ), null, true );
+            if ( ! empty( $season_request['derived'] ) ) {
+                if ( ! empty( $season_request['unknown_year'] ) ) {
+                    $ids = array_values( array_filter( $ids, function( $id ) {
+                        return null === self::episode_original_air_year( (int) $id );
+                    } ) );
+                    $season_response = self::derived_year_payload( $parent, null, count( $ids ), true );
+                } else {
+                    $requested_year = (int) $season_request['year'];
+                    $ids = array_values( array_filter( $ids, function( $id ) use ( $requested_year ) {
+                        return $requested_year === self::episode_original_air_year( (int) $id );
+                    } ) );
+                    $season_response = self::derived_year_payload( $parent, $requested_year, count( $ids ) );
+                }
             } else {
+                $season_term = $season_request['term'];
+                $season_post_ids = get_objects_in_term( (int) $season_term->term_id, 'category' );
+                if ( is_wp_error( $season_post_ids ) ) {
+                    $season_post_ids = array();
+                }
+                $season_post_ids = array_flip( array_map( 'intval', $season_post_ids ) );
+                $ids = array_values( array_filter( $ids, function( $id ) use ( $season_post_ids ) {
+                    return isset( $season_post_ids[ (int) $id ] );
+                } ) );
                 $season_response = self::season_term_payload( $season_term, count( $ids ) );
             }
         }
@@ -283,7 +284,7 @@ final class Golden_Replay_API {
             $post = get_post( $id );
             if ( ! $post || 'publish' !== $post->post_status ) { continue; }
             $payload = self::build_episode_payload( $post );
-            if ( empty( $payload['series']['key'] ) || $series_key !== $payload['series']['key'] ) { continue; }
+            if ( 'genre_matches' === $mode && ( empty( $payload['series']['key'] ) || $series_key !== $payload['series']['key'] ) ) { continue; }
             $episodes[] = $payload;
         }
 
@@ -507,26 +508,12 @@ final class Golden_Replay_API {
         return (int) $m[1];
     }
 
-    private static function season_term_payload( $term, $episode_count = null, $derived_year = null, $unknown_year = false ) {
+    private static function season_term_payload( $term, $episode_count = null ) {
         $season_number = self::season_number_from_term( $term );
         $year = null;
         $label = $term->name;
-        $key = $term->slug;
-        $slug = $term->slug;
-        $id = (int) $term->term_id;
 
-        if ( $unknown_year ) {
-            $label = 'Unknown';
-            $key .= '--year-unknown';
-            $slug = $key;
-            $id = ( $id * 10000 );
-        } elseif ( null !== $derived_year ) {
-            $year = (int) $derived_year;
-            $label = (string) $year;
-            $key .= '--year-' . $year;
-            $slug = $key;
-            $id = ( $id * 10000 ) + $year;
-        } elseif ( null !== $season_number ) {
+        if ( null !== $season_number ) {
             if ( '00' === $season_number || '0000' === $season_number ) {
                 $label = 'Unknown';
             } elseif ( self::season_number_is_year_code( $season_number ) ) {
@@ -536,9 +523,9 @@ final class Golden_Replay_API {
         }
 
         return array(
-            'id' => $id,
-            'key' => $key,
-            'slug' => $slug,
+            'id' => (int) $term->term_id,
+            'key' => $term->slug,
+            'slug' => $term->slug,
             'source_name' => $term->name,
             'season' => null === $season_number ? null : (int) $season_number,
             'year' => $year,
@@ -547,7 +534,66 @@ final class Golden_Replay_API {
         );
     }
 
+    private static function derived_year_payload( $parent, $year, $episode_count, $unknown = false ) {
+        $label = $unknown ? 'Unknown' : (string) (int) $year;
+        $slug = 'gr-year-' . ( $unknown ? 'unknown' : (string) (int) $year );
+        $id = ( (int) $parent->term_id * 10000 ) + ( $unknown ? 0 : (int) $year );
+
+        return array(
+            'id' => $id,
+            'key' => $slug,
+            'slug' => $slug,
+            'source_name' => $parent->name,
+            'season' => 0,
+            'year' => $unknown ? null : (int) $year,
+            'label' => $label,
+            'episode_count' => (int) $episode_count,
+        );
+    }
+
+    private static function parent_uses_derived_years( $parent ) {
+        $terms = get_terms( array(
+            'taxonomy' => 'category',
+            'parent' => (int) $parent->term_id,
+            'hide_empty' => false,
+        ) );
+        if ( is_wp_error( $terms ) || ! is_array( $terms ) ) { return false; }
+
+        foreach ( $terms as $term ) {
+            if ( ! self::is_season_term( $term ) ) { continue; }
+            $season_number = self::season_number_from_term( $term );
+            if ( null === $season_number || '00' === $season_number || '0000' === $season_number ) { continue; }
+            if ( ! self::season_number_is_year_code( $season_number ) ) { return true; }
+        }
+        return false;
+    }
+
     private static function get_series_season_terms( $parent, $series_ids ) {
+        if ( self::parent_uses_derived_years( $parent ) ) {
+            $year_counts = array();
+            $unknown_count = 0;
+
+            foreach ( array_values( array_unique( array_map( 'intval', $series_ids ) ) ) as $id ) {
+                $year = self::episode_original_air_year( $id );
+                if ( null === $year ) {
+                    $unknown_count++;
+                    continue;
+                }
+                if ( ! isset( $year_counts[ $year ] ) ) { $year_counts[ $year ] = 0; }
+                $year_counts[ $year ]++;
+            }
+
+            ksort( $year_counts, SORT_NUMERIC );
+            $items = array();
+            foreach ( $year_counts as $year => $count ) {
+                $items[] = self::derived_year_payload( $parent, (int) $year, $count );
+            }
+            if ( $unknown_count > 0 ) {
+                $items[] = self::derived_year_payload( $parent, null, $unknown_count, true );
+            }
+            return $items;
+        }
+
         $terms = get_terms( array(
             'taxonomy' => 'category',
             'parent' => (int) $parent->term_id,
@@ -562,37 +608,12 @@ final class Golden_Replay_API {
             if ( ! self::is_season_term( $term ) ) { continue; }
             $term_ids = get_objects_in_term( (int) $term->term_id, 'category' );
             if ( is_wp_error( $term_ids ) ) { continue; }
-
-            $matching_ids = array();
+            $count = 0;
             foreach ( $term_ids as $id ) {
-                if ( isset( $series_set[ (int) $id ] ) ) { $matching_ids[] = (int) $id; }
+                if ( isset( $series_set[ (int) $id ] ) ) { $count++; }
             }
-            if ( ! $matching_ids ) { continue; }
-
-            $season_number = self::season_number_from_term( $term );
-            if ( null !== $season_number && '00' !== $season_number && '0000' !== $season_number && ! self::season_number_is_year_code( $season_number ) ) {
-                $year_counts = array();
-                $unknown_count = 0;
-                foreach ( $matching_ids as $id ) {
-                    $year = self::episode_original_air_year( $id );
-                    if ( null === $year ) {
-                        $unknown_count++;
-                    } else {
-                        if ( ! isset( $year_counts[ $year ] ) ) { $year_counts[ $year ] = 0; }
-                        $year_counts[ $year ]++;
-                    }
-                }
-                ksort( $year_counts, SORT_NUMERIC );
-                foreach ( $year_counts as $year => $count ) {
-                    $items[] = self::season_term_payload( $term, $count, (int) $year );
-                }
-                if ( $unknown_count > 0 ) {
-                    $items[] = self::season_term_payload( $term, $unknown_count, null, true );
-                }
-                continue;
-            }
-
-            $items[] = self::season_term_payload( $term, count( $matching_ids ) );
+            if ( 0 === $count ) { continue; }
+            $items[] = self::season_term_payload( $term, $count );
         }
 
         usort( $items, function( $a, $b ) {
@@ -614,19 +635,18 @@ final class Golden_Replay_API {
     }
 
     private static function resolve_season_request( $parent, $season_slug ) {
-        $direct = self::find_direct_season_term( $parent, $season_slug );
-        if ( $direct ) {
-            return array( 'term' => $direct, 'year' => null, 'unknown_year' => false );
+        if ( preg_match( '/^gr-year-(\d{4}|unknown)$/', $season_slug, $m ) ) {
+            return array(
+                'derived' => true,
+                'term' => null,
+                'year' => 'unknown' === $m[1] ? null : (int) $m[1],
+                'unknown_year' => 'unknown' === $m[1],
+            );
         }
 
-        if ( preg_match( '/^(.*)--year-(\\d{4}|unknown)$/', $season_slug, $m ) ) {
-            $term = self::find_direct_season_term( $parent, $m[1] );
-            if ( ! $term ) { return null; }
-            return array(
-                'term' => $term,
-                'year' => 'unknown' === $m[2] ? null : (int) $m[2],
-                'unknown_year' => 'unknown' === $m[2],
-            );
+        $direct = self::find_direct_season_term( $parent, $season_slug );
+        if ( $direct ) {
+            return array( 'derived' => false, 'term' => $direct, 'year' => null, 'unknown_year' => false );
         }
 
         return null;
@@ -1094,7 +1114,13 @@ final class Golden_Replay_API {
             $index[ $key ]['sort_values'][ (string) $id ] = array( 'date' => $air, 'title' => $title['episode_title'] );
         }
 
-        foreach ( $series as &$item ) { $item['source_terms'] = array_values( $item['source_terms'] ); }
+        foreach ( $series as $key => &$item ) {
+            $item['source_terms'] = array_values( $item['source_terms'] );
+            if ( 'primary' === $item['match_type'] ) {
+                $matching_ids = isset( $index[ $key ]['matching_post_ids'] ) ? $index[ $key ]['matching_post_ids'] : array();
+                $item['matching_episode_count'] = count( self::get_all_series_episode_ids( $item, $matching_ids ) );
+            }
+        }
         unset( $item );
         uasort( $series, function( $a, $b ) { return strcasecmp( $a['name'], $b['name'] ); } );
         self::set_catalog_option( self::episode_index_cache_key( $genre['slug'] ), $index );
