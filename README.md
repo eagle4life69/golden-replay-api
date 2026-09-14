@@ -4,13 +4,14 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 
 ## Current Version
 
-**0.1.13**
+**0.1.15**
 
 ## Current API Endpoints
 
 ```text
 /wp-json/golden-replay/v1/episode/{id}
 /wp-json/golden-replay/v1/genres
+/wp-json/golden-replay/v1/latest?genre={genre-slug}
 /wp-json/golden-replay/v1/series?genre={genre-slug}
 /wp-json/golden-replay/v1/seasons?genre={genre-slug}&series={series-key}
 /wp-json/golden-replay/v1/episodes?genre={genre-slug}&series={series-key}
@@ -18,6 +19,28 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 ```
 
 All endpoints expose information derived only from published WordPress posts.
+
+## v0.1.15 Latest Published Episode
+
+Version 0.1.15 adds the `/latest` endpoint used by the Golden Replay Home screen to retrieve the newest published episode for a selected genre.
+
+Example:
+
+```text
+/wp-json/golden-replay/v1/latest?genre=westerns
+```
+
+The endpoint selects the most recent episode using the WordPress publication date, not the episode's historical `original_air_date`. This keeps Home-screen featured content aligned with what was most recently released on the site while preserving historical air-date ordering in the existing `/episodes` browse endpoint.
+
+The response includes the selected genre plus the complete normalized episode payload, including series information, description, original air date, published date, duration, audio information, credits, and availability.
+
+For a primary-genre series, the same series-selection rules used by the browse API are preserved so published episodes belonging to that series may still qualify even when an individual post is missing the primary genre taxonomy. Secondary genre matches remain limited to episodes that actually match the selected genre.
+
+## v0.1.14 Catalog Cache Namespace Refresh
+
+Version 0.1.14 bumps the persistent catalog cache namespace so corrected series counts and derived-year behavior introduced in v0.1.13 become visible immediately instead of waiting for previously stored catalog data to age out.
+
+No public endpoint contract changed in v0.1.14.
 
 ## v0.1.13 Series Counts and Derived Year Browsing
 
@@ -133,7 +156,7 @@ The public API is intentionally read-only and narrowly scoped. Only published po
 
 The plugin includes the existing native GitHub release updater in `github-updater.php`. The updater preserves the installed plugin directory so activation and automatic-update preferences remain stable across GitHub release updates.
 
-A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.13`.
+A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.15`.
 
 ## Development Workflow
 
@@ -153,7 +176,9 @@ WordPress detects the newer release
 
 ## Current Development Status
 
-Version 0.1.13 provides the server-side browse flow used by the SwiftUI client: `Genres -> Series -> Year -> Episodes -> Episode detail/audio`. Programs with valid year-coded season categories continue to browse by those categories, while ordinal-season programs can use calendar years derived from episode air dates. Programs without usable season/year browsing continue to support direct series-to-episodes requests.
+Version 0.1.15 provides the server-side browse flow used by the SwiftUI client: `Genres -> Series -> Year -> Episodes -> Episode detail/audio`, plus a dedicated `Latest Published Episode` lookup for Home-screen featured content. Historical browsing continues to use `original_air_date`, while `/latest` uses the WordPress publication date so featured content follows the site's release schedule.
+
+Programs with valid year-coded season categories continue to browse by those categories, while ordinal-season programs can use calendar years derived from episode air dates. Programs without usable season/year browsing continue to support direct series-to-episodes requests.
 
 ## Publisher
 
