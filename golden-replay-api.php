@@ -347,7 +347,7 @@ final class Golden_Replay_API {
         $ids = self::sort_episode_ids( $ids, $sort_values, $order );
 
         $page = max( 1, absint( $request->get_param( 'page' ) ) );
-        $per_page = min( 100, max( 1, absint( $request->get_param( 'per_page' ) ) );
+        $per_page = min( 100, max( 1, absint( $request->get_param( 'per_page' ) ) ) );
         $total = count( $ids );
         $page_ids = array_slice( $ids, ( $page - 1 ) * $per_page, $per_page );
         $episodes = array();
@@ -851,6 +851,9 @@ final class Golden_Replay_API {
         $lines = array_values( array_filter( array_map( 'trim', explode( "\n", $text ) ), 'strlen' ) );
         $r = array( 'description' => null, 'original_air_date' => null, 'show' => null, 'credits' => array() );
 
+        // Existing show notes place an optional episode description before
+        // "Original Air Date:". Capture that leading text without requiring
+        // a visible "Description:" label in the WordPress post.
         foreach ( $lines as $index => $line ) {
             if ( 0 !== stripos( $line, 'Original Air Date:' ) ) { continue; }
             if ( $index > 0 ) {
