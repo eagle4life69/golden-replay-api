@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.14
+ * Version: 0.1.15
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -12,7 +12,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'GRAPI_VERSION', '0.1.14' );
+define( 'GRAPI_VERSION', '0.1.15' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -50,6 +50,20 @@ final class Golden_Replay_API {
             'methods' => WP_REST_Server::READABLE,
             'callback' => array( __CLASS__, 'get_genres' ),
             'permission_callback' => '__return_true',
+        ) );
+
+        register_rest_route( self::NAMESPACE, '/latest', array(
+            'methods' => WP_REST_Server::READABLE,
+            'callback' => array( __CLASS__, 'get_latest_episode' ),
+            'permission_callback' => '__return_true',
+            'args' => array(
+                'genre' => array(
+                    'type' => 'string',
+                    'required' => true,
+                    'sanitize_callback' => 'sanitize_title',
+                    'validate_callback' => function( $p ) { return null !== self::canonical_genre_definition( sanitize_title( $p ) ); },
+                ),
+            ),
         ) );
 
         register_rest_route( self::NAMESPACE, '/series', array(
@@ -140,6 +154,64 @@ final class Golden_Replay_API {
             return new WP_Error( 'golden_replay_episode_not_found', 'Episode not found.', array( 'status' => 404 ) );
         }
         return rest_ensure_response( self::build_episode_payload( $post ) );
+    }
+
+    public static function get_latest_episode( WP_REST_Request $request ) {
+        $genre = self::canonical_genre_definition( sanitize_title( $request->get_param( 'genre' ) ) );
+        if ( ! $genre ) {
+            return new WP_Error( 'golden_replay_invalid_genre', 'Invalid genre.', array( 'status' => 400 ) );
+        }
+
+        $catalog = self::get_or_build_series_catalog( $genre );
+        $index = self::get_or_build_episode_index( $genre );
+        $ids = array();
+
+        foreach ( $catalog as $series_item ) {
+            if ( empty( $series_item['key'] ) ) { continue; }
+
+            $series_key = $series_item['key'];
+            $series_index = isset( $index[ $series_key ] ) && is_array( $index[ $series_key ] ) ? $index[ $series_key ] : array();
+            $matching = isset( $series_index['matching_post_ids'] ) && is_array( $series_index['matching_post_ids'] ) ? $series_index['matching_post_ids'] : array();
+
+            if ( isset( $series_item['match_type'] ) && 'primary' === $series_item['match_type'] ) {
+                $series_ids = self::get_all_series_episode_ids( $series_item, $matching );
+            } else {
+                $series_ids = $matching;
+            }
+
+            $ids = array_merge( $ids, $series_ids );
+        }
+
+        $ids = array_values( array_unique( array_filter( array_map( 'intval', $ids ) ) ) );
+        if ( empty( $ids ) ) {
+            return new WP_Error( 'golden_replay_no_episodes', 'No published episodes were found for this genre.', array( 'status' => 404 ) );
+        }
+
+        $latest_ids = get_posts( array(
+            'post_type' => 'post',
+            'post_status' => 'publish',
+            'post__in' => $ids,
+            'posts_per_page' => 1,
+            'orderby' => array( 'date' => 'DESC', 'ID' => 'DESC' ),
+            'ignore_sticky_posts' => true,
+            'no_found_rows' => true,
+            'fields' => 'ids',
+        ) );
+
+        if ( empty( $latest_ids ) ) {
+            return new WP_Error( 'golden_replay_no_episodes', 'No published episodes were found for this genre.', array( 'status' => 404 ) );
+        }
+
+        $post = get_post( (int) $latest_ids[0] );
+        if ( ! $post || 'post' !== $post->post_type || 'publish' !== $post->post_status ) {
+            return new WP_Error( 'golden_replay_episode_not_found', 'Latest episode could not be loaded.', array( 'status' => 404 ) );
+        }
+
+        return rest_ensure_response( array(
+            'source' => self::detect_source(),
+            'genre' => array( 'name' => $genre['name'], 'slug' => $genre['slug'] ),
+            'episode' => self::build_episode_payload( $post ),
+        ) );
     }
 
     public static function get_genres() {
