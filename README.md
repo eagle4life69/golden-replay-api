@@ -20,6 +20,14 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 
 All endpoints expose information derived only from published WordPress posts.
 
+## Admin Enclosure Inspector
+
+The plugin includes an administrator-only diagnostic tool under **Settings → Golden Replay API** in WordPress.
+
+The **Enclosure Inspector** accepts either a WordPress post ID or a full episode URL and retrieves all stored `enclosure` post-meta values for that post. It displays each enclosure's parsed URL, length, MIME type, and raw enclosure metadata. This is intended to diagnose posts that may contain multiple audio variants, such as Standard, Ad-Free, or other edited versions, before those variants are modeled by the Golden Replay API.
+
+The inspector is available only to users with the `manage_options` capability and its form is protected with a WordPress nonce. It does **not** add a REST route, does **not** change the public episode payload, and does **not** expose alternate enclosure URLs through the public Golden Replay API.
+
 ## v0.1.15 Latest Published Episode
 
 Version 0.1.15 adds the `/latest` endpoint used by the Golden Replay Home screen to retrieve the newest published episode for a selected genre.
@@ -148,9 +156,13 @@ Each catalog response identifies its WordPress source. `publisher_feed` remains 
 
 Golden Replay reads WordPress `enclosure` post metadata server-side. Valid Spreaker URLs are restricted to `api.spreaker.com`. Duration and file-size values remain nullable because the Spreaker WordPress integration may not populate them until metadata has been refreshed.
 
+The administrator-only Enclosure Inspector can retrieve all `enclosure` values for diagnostic purposes without changing the public API response. This allows multiple stored audio variants to be investigated without exposing their URLs to API consumers.
+
 ## Security Design
 
 The public API is intentionally read-only and narrowly scoped. Only published posts are returned, counted, or included in catalog discovery. Inputs are validated and sanitized, responses are explicitly constructed, raw WordPress post meta is not exposed, and no create/edit/delete/upload/execute endpoints or secrets are provided.
+
+Administrative diagnostics are kept outside the REST API. The Enclosure Inspector requires `manage_options`, uses nonce validation, and does not make alternate enclosure metadata publicly addressable through Golden Replay REST routes.
 
 ## Automatic Updates
 
@@ -165,7 +177,9 @@ Create a temporary feature/fix branch
         ↓
 Make and test changes
         ↓
-Open a Pull Request into main
+Update README.md for the change
+        ↓
+Open or update the Pull Request into main
         ↓
 Review and merge
         ↓
@@ -174,9 +188,13 @@ Publish a GitHub Release
 WordPress detects the newer release
 ```
 
+**README requirement:** Every functional plugin change should include the corresponding README update in the same branch/PR so documentation stays synchronized with the code.
+
 ## Current Development Status
 
 Version 0.1.15 provides the server-side browse flow used by the SwiftUI client: `Genres -> Series -> Year -> Episodes -> Episode detail/audio`, plus a dedicated `Latest Published Episode` lookup for Home-screen featured content. Historical browsing continues to use `original_air_date`, while `/latest` uses the WordPress publication date so featured content follows the site's release schedule.
+
+The current development branch also includes the administrator-only Enclosure Inspector for safely examining multiple stored audio enclosures before a public/private audio-variant model is implemented.
 
 Programs with valid year-coded season categories continue to browse by those categories, while ordinal-season programs can use calendar years derived from episode air dates. Programs without usable season/year browsing continue to support direct series-to-episodes requests.
 
