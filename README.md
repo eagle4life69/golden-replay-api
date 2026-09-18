@@ -4,7 +4,7 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 
 ## Current Version
 
-**0.1.15**
+**0.1.17**
 
 ## Current API Endpoints
 
@@ -27,6 +27,12 @@ The plugin includes an administrator-only diagnostic tool under **Settings → G
 The **Enclosure Inspector** accepts either a WordPress post ID or a full episode URL and retrieves all stored `enclosure` post-meta values for that post. It displays each enclosure's parsed URL, length, MIME type, and raw enclosure metadata. This is intended to diagnose posts that may contain multiple audio variants, such as Standard, Ad-Free, or other edited versions, before those variants are modeled by the Golden Replay API.
 
 The inspector is available only to users with the `manage_options` capability and its form is protected with a WordPress nonce. It does **not** add a REST route, does **not** change the public episode payload, and does **not** expose alternate enclosure URLs through the public Golden Replay API.
+
+## v0.1.17 Version Metadata Correction
+
+Version 0.1.17 corrects the plugin version metadata after the Enclosure Inspector release package continued to identify itself internally as 0.1.15. Both the WordPress plugin header and `GRAPI_VERSION` constant now report 0.1.17 so WordPress can correctly recognize the installed release and stop repeatedly offering the same update.
+
+The administrator-only Enclosure Inspector introduced immediately before this correction remains unchanged.
 
 ## v0.1.15 Latest Published Episode
 
