@@ -169,3 +169,11 @@ function grapi_github_clear_update_cache( $upgrader, $options ) {
     }
 }
 add_action( 'upgrader_process_complete', 'grapi_github_clear_update_cache', 10, 2 );
+
+// Load admin-only API settings and diagnostics. Keeping these tools outside the
+// public REST implementation prevents diagnostic enclosure data from being
+// exposed through Golden Replay API endpoints.
+$grapi_admin_settings = plugin_dir_path( __FILE__ ) . 'admin-settings.php';
+if ( file_exists( $grapi_admin_settings ) ) {
+    require_once $grapi_admin_settings;
+}
