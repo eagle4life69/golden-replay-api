@@ -1,0 +1,48 @@
+name: Fix v0.1.17 version metadata
+
+on:
+  push:
+    branches:
+      - fix/v0.1.16-version-bump
+
+permissions:
+  contents: write
+
+jobs:
+  fix-version:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v0.1.16-version-bump
+      - name: Correct plugin and README version
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          php = Path('golden-replay-api.php')
+          s = php.read_text()
+          s = s.replace(' * Version: 0.1.15', ' * Version: 0.1.17', 1)
+          s = s.replace("define( 'GRAPI_VERSION', '0.1.15' );", "define( 'GRAPI_VERSION', '0.1.17' );", 1)
+          php.write_text(s)
+
+          readme = Path('README.md')
+          r = readme.read_text()
+          r = r.replace('## Current Version\n\n**0.1.15**', '## Current Version\n\n**0.1.17**', 1)
+          marker = '## v0.1.15 Latest Published Episode'
+          section = '''## v0.1.17 Version Metadata Correction\n\nVersion 0.1.17 corrects the plugin version metadata after the Enclosure Inspector release package continued to identify itself internally as 0.1.15. Both the WordPress plugin header and `GRAPI_VERSION` constant now report 0.1.17 so WordPress can correctly recognize the installed release and stop repeatedly offering the same update.\n\nThe administrator-only Enclosure Inspector introduced immediately before this correction remains unchanged.\n\n'''
+          if '## v0.1.17 Version Metadata Correction' not in r:
+              r = r.replace(marker, section + marker, 1)
+          readme.write_text(r)
+          PY
+      - name: Remove temporary repair workflow
+        run: rm -f .github/workflows/fix-version.yml
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add golden-replay-api.php README.md .github/workflows/fix-version.yml
+          git commit -m "Fix plugin version metadata for v0.1.17"
+          git push origin HEAD:fix/v0.1.16-version-bump
