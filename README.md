@@ -4,7 +4,19 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 
 ## Current Version
 
-**0.1.17**
+**0.1.18**
+
+## v0.1.18 Partial Original Air Dates
+
+Version 0.1.18 fixes parsing of historical Original Air Date values when the source only knows part of the date.
+
+- A year-only value such as `1949` is preserved as `1949-00-00`.
+- A month/year value such as `May 1949` is preserved as `1949-05-00`.
+- A complete date such as `May 12, 1949` remains `1949-05-12`.
+- Missing or unrecognized historical dates remain unknown rather than borrowing the current date.
+- Partial historical dates are no longer passed through PHP `strtotime()` in a way that fills missing month/day components from the current date.
+
+This allows Golden Replay clients and importers to group year-only episodes under the correct historical year while retaining the fact that the month and/or day are unknown.
 
 ## Current API Endpoints
 
@@ -174,7 +186,7 @@ Administrative diagnostics are kept outside the REST API. The Enclosure Inspecto
 
 The plugin includes the existing native GitHub release updater in `github-updater.php`. The updater preserves the installed plugin directory so activation and automatic-update preferences remain stable across GitHub release updates.
 
-A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.15`.
+A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.18`.
 
 ## Development Workflow
 
@@ -198,7 +210,7 @@ WordPress detects the newer release
 
 ## Current Development Status
 
-Version 0.1.15 provides the server-side browse flow used by the SwiftUI client: `Genres -> Series -> Year -> Episodes -> Episode detail/audio`, plus a dedicated `Latest Published Episode` lookup for Home-screen featured content. Historical browsing continues to use `original_air_date`, while `/latest` uses the WordPress publication date so featured content follows the site's release schedule.
+Version 0.1.18 provides the server-side browse flow used by the SwiftUI client: `Genres -> Series -> Year -> Episodes -> Episode detail/audio`, plus a dedicated `Latest Published Episode` lookup for Home-screen featured content. Historical browsing continues to use `original_air_date`, including partial historical dates whose unknown month/day components remain `00`, while `/latest` uses the WordPress publication date so featured content follows the site's release schedule.
 
 The current development branch also includes the administrator-only Enclosure Inspector for safely examining multiple stored audio enclosures before a public/private audio-variant model is implemented.
 
