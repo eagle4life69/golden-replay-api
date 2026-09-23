@@ -3,7 +3,7 @@
  * Plugin Name: Golden Replay API
  * Plugin URI: https://github.com/eagle4life69/golden-replay-api
  * Description: Read-only REST API for Golden Replay episode data.
- * Version: 0.1.19
+ * Version: 0.1.20
  * Author: Rhynes Media LLC
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -12,7 +12,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'GRAPI_VERSION', '0.1.18' );
+define( 'GRAPI_VERSION', '0.1.20' );
 define( 'GRAPI_PLUGIN_FILE', __FILE__ );
 
 $grapi_updater = plugin_dir_path( __FILE__ ) . 'github-updater.php';
@@ -310,78 +310,98 @@ final class Golden_Replay_API {
             if ( ! $parent ) {
                 return new WP_Error( 'golden_replay_season_parent_not_found', 'No season categories were found for this series.', array( 'status' => 404 ) );
             }
-
-            $season_request = self::resolve_season_request( $parent, $season_slug );
-            if ( ! $season_request ) {
-                return new WP_Error( 'golden_replay_season_not_found', 'Season not found for the selected series.', array( 'status' => 404 ) );
+            $season = get_term_by( 'slug', $season_slug, 'category' );
+            if ( ! $season || is_wp_error( $season ) || (int) $season->parent !== (int) $parent->term_id ) {
+                return new WP_Error( 'golden_replay_season_not_found', 'Season not found for this series.', array( 'status' => 404 ) );
             }
-
-            if ( ! empty( $season_request['derived'] ) ) {
-                if ( ! empty( $season_request['unknown_year'] ) ) {
-                    $ids = array_values( array_filter( $ids, function( $id ) {
-                        return null === self::episode_original_air_year( (int) $id );
-                    } ) );
-                    $season_response = self::derived_year_payload( $parent, null, count( $ids ), true );
-                } else {
-                    $requested_year = (int) $season_request['year'];
-                    $ids = array_values( array_filter( $ids, function( $id ) use ( $requested_year ) {
-                        return $requested_year === self::episode_original_air_year( (int) $id );
-                    } ) );
-                    $season_response = self::derived_year_payload( $parent, $requested_year, count( $ids ) );
-                }
-            } else {
-                $season_term = $season_request['term'];
-                $season_post_ids = get_objects_in_term( (int) $season_term->term_id, 'category' );
-                if ( is_wp_error( $season_post_ids ) ) {
-                    $season_post_ids = array();
-                }
-                $season_post_ids = array_flip( array_map( 'intval', $season_post_ids ) );
-                $ids = array_values( array_filter( $ids, function( $id ) use ( $season_post_ids ) {
-                    return isset( $season_post_ids[ (int) $id ] );
-                } ) );
-                $season_response = self::season_term_payload( $season_term, count( $ids ) );
-            }
+            $season_ids = get_objects_in_term( (int) $season->term_id, 'category' );
+            if ( is_wp_error( $season_ids ) ) { $season_ids = array(); }
+            $season_ids = array_map( 'intval', $season_ids );
+            $ids = array_values( array_intersect( $ids, $season_ids ) );
+            $season_response = array( 'id' => (int) $season->term_id, 'name' => $season->name, 'slug' => $season->slug );
         }
 
         $order = 'desc' === strtolower( (string) $request->get_param( 'order' ) ) ? 'desc' : 'asc';
-        $ids = self::sort_episode_ids( $ids, $sort_values, $order );
+        usort( $ids, function( $a, $b ) use ( $sort_values, $order ) {
+            $a_sort = isset( $sort_values[ $a ] ) ? $sort_values[ $a ] : '';
+            $b_sort = isset( $sort_values[ $b ] ) ? $sort_values[ $b ] : '';
+            $cmp = strcmp( $a_sort, $b_sort );
+            if ( 0 === $cmp ) { $cmp = $a <=> $b; }
+            return 'desc' === $order ? -$cmp : $cmp;
+        } );
 
         $page = max( 1, absint( $request->get_param( 'page' ) ) );
         $per_page = min( 100, max( 1, absint( $request->get_param( 'per_page' ) ) ) );
         $total = count( $ids );
-        $page_ids = array_slice( $ids, ( $page - 1 ) * $per_page, $per_page );
+        $pages = max( 1, (int) ceil( $total / $per_page ) );
+        $paged_ids = array_slice( $ids, ( $page - 1 ) * $per_page, $per_page );
         $episodes = array();
-
-        foreach ( $page_ids as $id ) {
+        foreach ( $paged_ids as $id ) {
             $post = get_post( $id );
-            if ( ! $post || 'publish' !== $post->post_status ) { continue; }
-            $payload = self::build_episode_payload( $post );
-            if ( 'genre_matches' === $mode && ( empty( $payload['series']['key'] ) || $series_key !== $payload['series']['key'] ) ) { continue; }
-            $episodes[] = $payload;
+            if ( $post && 'publish' === $post->post_status ) { $episodes[] = self::build_episode_payload( $post ); }
         }
 
         return rest_ensure_response( array(
             'source' => self::detect_source(),
             'genre' => array( 'name' => $genre['name'], 'slug' => $genre['slug'] ),
-            'series' => array(
-                'key' => $series_item['key'],
-                'name' => $series_item['name'],
-                'match_type' => $series_item['match_type'],
-            ),
+            'series' => array( 'key' => $series_item['key'], 'name' => $series_item['name'], 'match_type' => $series_item['match_type'] ),
             'selection_mode' => $mode,
             'season' => $season_response,
-            'pagination' => array(
-                'page' => $page,
-                'per_page' => $per_page,
-                'total' => $total,
-                'total_pages' => $total ? (int) ceil( $total / $per_page ) : 0,
-            ),
+            'pagination' => array( 'page' => $page, 'per_page' => $per_page, 'total' => $total, 'pages' => $pages ),
             'episodes' => $episodes,
         ) );
     }
 
+    private static function canonical_genres() {
+        return array(
+            'western' => array(
+                'name' => 'Western',
+                'slug' => 'western',
+                'aliases' => array( 'westerns', 'western-stories' ),
+            ),
+            'mystery' => array(
+                'name' => 'Mystery',
+                'slug' => 'mystery',
+                'aliases' => array( 'mystery', 'mysteries' ),
+            ),
+            'drama' => array(
+                'name' => 'Drama',
+                'slug' => 'drama',
+                'aliases' => array( 'drama', 'dramas' ),
+            ),
+            'comedy' => array(
+                'name' => 'Comedy',
+                'slug' => 'comedy',
+                'aliases' => array( 'comedy', 'comedies' ),
+            ),
+            'science-fiction' => array(
+                'name' => 'Science Fiction',
+                'slug' => 'science-fiction',
+                'aliases' => array( 'science-fiction', 'sci-fi', 'scifi' ),
+            ),
+            'detective' => array(
+                'name' => 'Detective',
+                'slug' => 'detective',
+                'aliases' => array( 'detective', 'detectives', 'crime' ),
+            ),
+            'adventure' => array(
+                'name' => 'Adventure',
+                'slug' => 'adventure',
+                'aliases' => array( 'adventure', 'adventures' ),
+            ),
+        );
+    }
+
+    private static function canonical_genre_definition( $slug ) {
+        $slug = sanitize_title( $slug );
+        foreach ( self::canonical_genres() as $genre ) {
+            if ( $slug === $genre['slug'] || in_array( $slug, $genre['aliases'], true ) ) { return $genre; }
+        }
+        return null;
+    }
+
     private static function get_or_build_series_catalog( $genre ) {
-        $key = self::series_cache_key( $genre['slug'] );
+        $key = 'grapi_series_catalog_v3_' . $genre['slug'];
         $cached = self::get_catalog_option( $key );
         if ( null === $cached ) {
             $data = self::build_series_catalog( $genre );
@@ -392,910 +412,287 @@ final class Golden_Replay_API {
         return $cached['data'];
     }
 
-    private static function find_series_catalog_item( $catalog, $key ) {
-        foreach ( $catalog as $item ) {
-            if ( isset( $item['key'] ) && $key === $item['key'] ) { return $item; }
-        }
-        return null;
-    }
-
     private static function get_or_build_episode_index( $genre ) {
-        $key = self::episode_index_cache_key( $genre['slug'] );
+        $key = 'grapi_episode_index_v3_' . $genre['slug'];
         $cached = self::get_catalog_option( $key );
         if ( null === $cached ) {
-            $series = self::build_series_catalog( $genre );
-            self::set_catalog_option( self::series_cache_key( $genre['slug'] ), $series );
-            $cached = self::get_catalog_option( $key );
+            $data = self::build_episode_index( $genre );
+            self::set_catalog_option( $key, $data );
+            return $data;
         }
-        if ( null === $cached ) { return array(); }
         self::maybe_schedule_catalog_refresh( $cached );
-        return is_array( $cached['data'] ) ? $cached['data'] : array();
+        return $cached['data'];
     }
-
-    private static function get_all_series_episode_ids( $series, $matching ) {
-        $tag_ids = array();
-        if ( ! empty( $series['source_terms'] ) ) {
-            foreach ( $series['source_terms'] as $t ) {
-                if ( ! empty( $t['id'] ) ) { $tag_ids[] = (int) $t['id']; }
-            }
-        }
-        $tag_ids = array_values( array_unique( $tag_ids ) );
-        $ids = $matching;
-        if ( $tag_ids ) {
-            $q = new WP_Query( array(
-                'post_type' => 'post',
-                'post_status' => 'publish',
-                'fields' => 'ids',
-                'posts_per_page' => -1,
-                'orderby' => 'ID',
-                'order' => 'ASC',
-                'ignore_sticky_posts' => true,
-                'no_found_rows' => true,
-                'update_post_meta_cache' => false,
-                'update_post_term_cache' => false,
-                'tax_query' => array( array(
-                    'taxonomy' => 'post_tag',
-                    'field' => 'term_id',
-                    'terms' => $tag_ids,
-                    'operator' => 'IN',
-                ) ),
-            ) );
-            $ids = array_merge( $ids, $q->posts );
-        }
-        return array_values( array_unique( array_map( 'intval', $ids ) ) );
-    }
-
-    private static function sort_episode_ids( $ids, $sort_values, $order ) {
-        $rows = array();
-        foreach ( $ids as $id ) {
-            $id = (int) $id;
-            $key = (string) $id;
-            if ( isset( $sort_values[ $key ] ) && is_array( $sort_values[ $key ] ) ) {
-                $v = $sort_values[ $key ];
-                $rows[] = array(
-                    'id' => $id,
-                    'date' => ! empty( $v['date'] ) ? $v['date'] : null,
-                    'title' => isset( $v['title'] ) ? (string) $v['title'] : '',
-                );
-                continue;
-            }
-
-            $post = get_post( $id );
-            if ( ! $post || 'publish' !== $post->post_status ) { continue; }
-            $title = self::parse_title( get_the_title( $post ) );
-            $content = self::parse_content( $post->post_content );
-            $air = ! empty( $content['original_air_date'] ) ? $content['original_air_date'] : $title['original_air_date'];
-            $rows[] = array( 'id' => $id, 'date' => $air, 'title' => $title['episode_title'] );
-        }
-
-        usort( $rows, function( $a, $b ) use ( $order ) {
-            $a_missing = empty( $a['date'] );
-            $b_missing = empty( $b['date'] );
-            if ( $a_missing !== $b_missing ) { return $a_missing ? 1 : -1; }
-            if ( ! $a_missing ) {
-                $date_cmp = strcmp( $a['date'], $b['date'] );
-                if ( 0 !== $date_cmp ) { return 'desc' === $order ? -$date_cmp : $date_cmp; }
-            }
-            $title_cmp = strcasecmp( $a['title'], $b['title'] );
-            if ( 0 !== $title_cmp ) { return $title_cmp; }
-            return $a['id'] <=> $b['id'];
-        } );
-
-        return array_values( array_map( function( $r ) { return (int) $r['id']; }, $rows ) );
-    }
-
-    private static function find_series_parent_category( $series_item, $ids ) {
-        $checked = array();
-        $limit = 100;
-        $count = 0;
-
-        foreach ( $ids as $id ) {
-            if ( $count++ >= $limit ) { break; }
-            $categories = get_the_category( (int) $id );
-            foreach ( $categories as $cat ) {
-                $cat_id = (int) $cat->term_id;
-                if ( isset( $checked[ $cat_id ] ) ) { continue; }
-                $checked[ $cat_id ] = true;
-                if ( self::genre_from_term( $cat, 'category' ) || self::is_season_term( $cat ) ) { continue; }
-                if ( self::category_has_season_children( $cat_id ) ) { return $cat; }
-            }
-        }
-
-        $candidate_labels = array( $series_item['name'], $series_item['key'] );
-        if ( ! empty( $series_item['source_terms'] ) ) {
-            foreach ( $series_item['source_terms'] as $term ) {
-                if ( ! empty( $term['name'] ) ) { $candidate_labels[] = $term['name']; }
-                if ( ! empty( $term['slug'] ) ) { $candidate_labels[] = $term['slug']; }
-            }
-        }
-
-        $normalized = array();
-        foreach ( $candidate_labels as $label ) {
-            $n = self::normalize_series_category_label( $label );
-            if ( '' !== $n ) { $normalized[ $n ] = true; }
-        }
-
-        $terms = get_terms( array( 'taxonomy' => 'category', 'hide_empty' => false ) );
-        if ( is_wp_error( $terms ) || ! is_array( $terms ) ) { return null; }
-
-        foreach ( $terms as $term ) {
-            $name_key = self::normalize_series_category_label( $term->name );
-            $slug_key = self::normalize_series_category_label( $term->slug );
-            if ( ! isset( $normalized[ $name_key ] ) && ! isset( $normalized[ $slug_key ] ) ) { continue; }
-            if ( self::category_has_season_children( (int) $term->term_id ) ) { return $term; }
-        }
-
-        return null;
-    }
-
-    private static function normalize_series_category_label( $value ) {
-        $value = self::clean_series_name( $value );
-        $value = preg_replace( '/^the\\s+/i', '', $value );
-        return self::normalize_taxonomy_label( $value );
-    }
-
-    private static function category_has_season_children( $parent_id ) {
-        $children = get_terms( array(
-            'taxonomy' => 'category',
-            'parent' => (int) $parent_id,
-            'hide_empty' => false,
-            'number' => 20,
-        ) );
-        if ( is_wp_error( $children ) || ! is_array( $children ) ) { return false; }
-        foreach ( $children as $child ) {
-            if ( self::is_season_term( $child ) ) { return true; }
-        }
-        return false;
-    }
-
-    private static function is_season_term( $term ) {
-        if ( ! is_object( $term ) ) { return false; }
-        return (bool) preg_match( '/(?:^|[-_\\s])season[-_\\s]*(\\d{1,2}|\\d{4})$/i', (string) $term->slug )
-            || (bool) preg_match( '/(?:^|[-_\\s])season[-_\\s]*(\\d{1,2}|\\d{4})$/i', (string) $term->name );
-    }
-
-    private static function season_number_from_term( $term ) {
-        foreach ( array( (string) $term->slug, (string) $term->name ) as $value ) {
-            if ( preg_match( '/(?:^|[-_\\s])season[-_\\s]*(\\d{1,2}|\\d{4})$/i', $value, $m ) ) {
-                return $m[1];
-            }
-        }
-        return null;
-    }
-
-    private static function season_number_is_year_code( $season_number ) {
-        if ( null === $season_number ) { return false; }
-        if ( 4 === strlen( (string) $season_number ) ) { return true; }
-        $n = (int) $season_number;
-        return $n >= 20 && $n <= 80;
-    }
-
-    private static function episode_original_air_year( $post_id ) {
-        $post = get_post( (int) $post_id );
-        if ( ! $post || 'publish' !== $post->post_status ) { return null; }
-        $content = self::parse_content( $post->post_content );
-        $title = self::parse_title( get_the_title( $post ) );
-        $air = ! empty( $content['original_air_date'] ) ? $content['original_air_date'] : $title['original_air_date'];
-        if ( ! is_string( $air ) || ! preg_match( '/^(\\d{4})-\\d{2}-\\d{2}$/', $air, $m ) ) { return null; }
-        return (int) $m[1];
-    }
-
-    private static function season_term_payload( $term, $episode_count = null ) {
-        $season_number = self::season_number_from_term( $term );
-        $year = null;
-        $label = $term->name;
-
-        if ( null !== $season_number ) {
-            if ( '00' === $season_number || '0000' === $season_number ) {
-                $label = 'Unknown';
-            } elseif ( self::season_number_is_year_code( $season_number ) ) {
-                $year = 4 === strlen( (string) $season_number ) ? (int) $season_number : 1900 + (int) $season_number;
-                $label = (string) $year;
-            }
-        }
-
-        return array(
-            'id' => (int) $term->term_id,
-            'key' => $term->slug,
-            'slug' => $term->slug,
-            'source_name' => $term->name,
-            'season' => null === $season_number ? null : (int) $season_number,
-            'year' => $year,
-            'label' => $label,
-            'episode_count' => null === $episode_count ? (int) $term->count : (int) $episode_count,
-        );
-    }
-
-    private static function derived_year_payload( $parent, $year, $episode_count, $unknown = false ) {
-        $label = $unknown ? 'Unknown' : (string) (int) $year;
-        $slug = 'gr-year-' . ( $unknown ? 'unknown' : (string) (int) $year );
-        $id = ( (int) $parent->term_id * 10000 ) + ( $unknown ? 0 : (int) $year );
-
-        return array(
-            'id' => $id,
-            'key' => $slug,
-            'slug' => $slug,
-            'source_name' => $parent->name,
-            'season' => 0,
-            'year' => $unknown ? null : (int) $year,
-            'label' => $label,
-            'episode_count' => (int) $episode_count,
-        );
-    }
-
-    private static function parent_uses_derived_years( $parent ) {
-        $terms = get_terms( array(
-            'taxonomy' => 'category',
-            'parent' => (int) $parent->term_id,
-            'hide_empty' => false,
-        ) );
-        if ( is_wp_error( $terms ) || ! is_array( $terms ) ) { return false; }
-
-        foreach ( $terms as $term ) {
-            if ( ! self::is_season_term( $term ) ) { continue; }
-            $season_number = self::season_number_from_term( $term );
-            if ( null === $season_number || '00' === $season_number || '0000' === $season_number ) { continue; }
-            if ( ! self::season_number_is_year_code( $season_number ) ) { return true; }
-        }
-        return false;
-    }
-
-    private static function get_series_season_terms( $parent, $series_ids ) {
-        if ( self::parent_uses_derived_years( $parent ) ) {
-            $year_counts = array();
-            $unknown_count = 0;
-
-            foreach ( array_values( array_unique( array_map( 'intval', $series_ids ) ) ) as $id ) {
-                $year = self::episode_original_air_year( $id );
-                if ( null === $year ) {
-                    $unknown_count++;
-                    continue;
-                }
-                if ( ! isset( $year_counts[ $year ] ) ) { $year_counts[ $year ] = 0; }
-                $year_counts[ $year ]++;
-            }
-
-            ksort( $year_counts, SORT_NUMERIC );
-            $items = array();
-            foreach ( $year_counts as $year => $count ) {
-                $items[] = self::derived_year_payload( $parent, (int) $year, $count );
-            }
-            if ( $unknown_count > 0 ) {
-                $items[] = self::derived_year_payload( $parent, null, $unknown_count, true );
-            }
-            return $items;
-        }
-
-        $terms = get_terms( array(
-            'taxonomy' => 'category',
-            'parent' => (int) $parent->term_id,
-            'hide_empty' => false,
-        ) );
-        if ( is_wp_error( $terms ) || ! is_array( $terms ) ) { return array(); }
-
-        $series_set = array_flip( array_map( 'intval', $series_ids ) );
-        $items = array();
-
-        foreach ( $terms as $term ) {
-            if ( ! self::is_season_term( $term ) ) { continue; }
-            $term_ids = get_objects_in_term( (int) $term->term_id, 'category' );
-            if ( is_wp_error( $term_ids ) ) { continue; }
-            $count = 0;
-            foreach ( $term_ids as $id ) {
-                if ( isset( $series_set[ (int) $id ] ) ) { $count++; }
-            }
-            if ( 0 === $count ) { continue; }
-            $items[] = self::season_term_payload( $term, $count );
-        }
-
-        usort( $items, function( $a, $b ) {
-            $a_unknown = null === $a['year'];
-            $b_unknown = null === $b['year'];
-            if ( $a_unknown !== $b_unknown ) { return $a_unknown ? 1 : -1; }
-            if ( ! $a_unknown && $a['year'] !== $b['year'] ) { return $a['year'] <=> $b['year']; }
-            return strcasecmp( $a['source_name'], $b['source_name'] );
-        } );
-
-        return $items;
-    }
-
-    private static function find_direct_season_term( $parent, $season_slug ) {
-        $term = get_term_by( 'slug', sanitize_title( $season_slug ), 'category' );
-        if ( ! $term || is_wp_error( $term ) ) { return null; }
-        if ( (int) $term->parent !== (int) $parent->term_id ) { return null; }
-        return self::is_season_term( $term ) ? $term : null;
-    }
-
-    private static function resolve_season_request( $parent, $season_slug ) {
-        if ( preg_match( '/^gr-year-(\d{4}|unknown)$/', $season_slug, $m ) ) {
-            return array(
-                'derived' => true,
-                'term' => null,
-                'year' => 'unknown' === $m[1] ? null : (int) $m[1],
-                'unknown_year' => 'unknown' === $m[1],
-            );
-        }
-
-        $direct = self::find_direct_season_term( $parent, $season_slug );
-        if ( $direct ) {
-            return array( 'derived' => false, 'term' => $direct, 'year' => null, 'unknown_year' => false );
-        }
-
-        return null;
-    }
-
-    public static function handle_post_change( $post_id, $post, $update ) {
-        if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) { return; }
-        if ( ! $post || 'post' !== $post->post_type ) { return; }
-        self::invalidate_catalog_generation();
-    }
-
-    public static function handle_deleted_post( $post_id, $post ) {
-        if ( $post && 'post' === $post->post_type ) { self::invalidate_catalog_generation(); }
-    }
-
-    public static function handle_term_change( $object_id, $terms, $tt_ids, $taxonomy, $append, $old_tt_ids ) {
-        if ( 'category' !== $taxonomy && 'post_tag' !== $taxonomy ) { return; }
-        if ( 'post' !== get_post_type( $object_id ) ) { return; }
-        self::invalidate_catalog_generation();
-    }
-
-    private static function invalidate_catalog_generation() {
-        $g = (int) get_option( 'grapi_catalog_generation', 1 );
-        update_option( 'grapi_catalog_generation', $g + 1, false );
-        self::schedule_catalog_refresh();
-    }
-
-    private static function current_catalog_generation() { return max( 1, (int) get_option( 'grapi_catalog_generation', 1 ) ); }
-    private static function series_cache_key( $slug ) { return 'grapi_series_catalog_v4_' . md5( sanitize_title( $slug ) ); }
-    private static function episode_index_cache_key( $slug ) { return 'grapi_episode_index_v3_' . md5( sanitize_title( $slug ) ); }
 
     private static function get_catalog_option( $key ) {
-        $v = get_option( $key, null );
-        if ( ! is_array( $v ) || ! array_key_exists( 'data', $v ) || empty( $v['built_at'] ) || empty( $v['generation'] ) ) { return null; }
-        return $v;
+        $value = get_option( $key );
+        if ( ! is_array( $value ) || ! array_key_exists( 'data', $value ) || empty( $value['built_at'] ) ) { return null; }
+        return $value;
     }
 
     private static function set_catalog_option( $key, $data ) {
-        update_option( $key, array(
-            'generation' => self::current_catalog_generation(),
-            'built_at' => time(),
-            'data' => $data,
-        ), false );
+        update_option( $key, array( 'built_at' => time(), 'data' => $data ), false );
     }
 
     private static function maybe_schedule_catalog_refresh( $cached ) {
-        if ( (int) $cached['generation'] !== self::current_catalog_generation() || ( time() - (int) $cached['built_at'] ) >= self::CACHE_MAX_AGE ) {
-            self::schedule_catalog_refresh();
-        }
-    }
-
-    private static function schedule_catalog_refresh() {
+        if ( empty( $cached['built_at'] ) || ( time() - (int) $cached['built_at'] ) < self::CACHE_MAX_AGE ) { return; }
         if ( ! wp_next_scheduled( 'grapi_rebuild_catalog_cache' ) ) {
-            wp_schedule_single_event( time() + 15, 'grapi_rebuild_catalog_cache' );
+            wp_schedule_single_event( time() + 5, 'grapi_rebuild_catalog_cache' );
         }
     }
 
     public static function rebuild_catalog_cache() {
-        if ( get_transient( 'grapi_catalog_rebuild_lock' ) ) { return; }
-        set_transient( 'grapi_catalog_rebuild_lock', 1, 10 * MINUTE_IN_SECONDS );
-        self::set_catalog_option( 'grapi_genres_catalog_v2', self::build_genres_payload() );
-        $seen = array();
-        foreach ( self::genre_definitions() as $def ) {
-            if ( isset( $seen[ $def['slug'] ] ) ) { continue; }
-            $seen[ $def['slug'] ] = true;
-            $genre = self::canonical_genre_definition( $def['slug'] );
-            if ( ! $genre ) { continue; }
-            self::set_catalog_option( self::series_cache_key( $genre['slug'] ), self::build_series_catalog( $genre ) );
+        self::clear_catalog_cache();
+        self::build_genres_payload();
+        foreach ( self::canonical_genres() as $genre ) {
+            $series = self::build_series_catalog( $genre );
+            self::set_catalog_option( 'grapi_series_catalog_v3_' . $genre['slug'], $series );
+            $index = self::build_episode_index( $genre );
+            self::set_catalog_option( 'grapi_episode_index_v3_' . $genre['slug'], $index );
         }
-        delete_transient( 'grapi_catalog_rebuild_lock' );
     }
 
-    private static function build_episode_payload( WP_Post $post ) {
-        $title = self::parse_title( get_the_title( $post ) );
-        $content = self::parse_content( $post->post_content );
-        $enc = self::parse_enclosure( get_post_meta( $post->ID, 'enclosure', true ) );
-        $series = self::build_series_from_show( $content['show'], $post );
-        $primary = self::detect_primary_genre( $post );
-        $genres = self::detect_episode_genres( $post, $primary );
-        $air = ! empty( $content['original_air_date'] ) ? $content['original_air_date'] : $title['original_air_date'];
-
-        return array(
-            'post_id' => (int) $post->ID,
-            'web_url' => add_query_arg( 'p', (int) $post->ID, home_url( '/' ) ),
-            'pretty_url' => get_permalink( $post ),
-            'title' => $title['episode_title'],
-            'series' => $series,
-            'publisher_feed' => self::detect_publisher_feed( $post ),
-            'genre' => $primary,
-            'primary_genre' => $primary,
-            'episode_genres' => $genres,
-            'source' => self::detect_source(),
-            'original_air_date' => $air,
-            'published_date' => get_post_time( DATE_ATOM, false, $post ),
-            'modified_date' => get_post_modified_time( DATE_ATOM, false, $post ),
-            'description' => ! empty( $content['description'] ) ? $content['description'] : null,
-            'duration_seconds' => $enc['duration_seconds'],
-            'duration_display' => $enc['duration_display'],
-            'file_size_bytes' => $enc['file_size_bytes'],
-            'file_size_display' => $enc['file_size_display'],
-            'audio' => array(
-                'provider' => $enc['provider'],
-                'episode_id' => $enc['episode_id'],
-                'stream_url' => $enc['stream_url'],
-                'download_url' => $enc['download_url'],
-            ),
-            'credits' => $content['credits'],
-            'availability' => array( 'status' => 'published', 'available' => true, 'scheduled_for' => null ),
-        );
+    private static function clear_catalog_cache() {
+        delete_option( 'grapi_genres_catalog_v2' );
+        foreach ( self::canonical_genres() as $genre ) {
+            delete_option( 'grapi_series_catalog_v3_' . $genre['slug'] );
+            delete_option( 'grapi_episode_index_v3_' . $genre['slug'] );
+        }
     }
 
-    private static function parse_title( $raw ) {
-        $title = html_entity_decode( wp_strip_all_tags( (string) $raw ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
-        $title = preg_replace( '/\\s+/u', ' ', trim( $title ) );
-        $date = null;
-        if ( preg_match( '/\\((\\d{2})-(\\d{2})-(\\d{2})\\)\\s*$/', $title, $m ) ) {
-            $y = (int) $m[3];
-            $y = $y >= 30 ? 1900 + $y : 2000 + $y;
-            $date = sprintf( '%04d-%02d-%02d', $y, (int) $m[1], (int) $m[2] );
-            $title = trim( preg_replace( '/\\s*\\(\\d{2}-\\d{2}-\\d{2}\\)\\s*$/', '', $title ) );
-        }
-        $parts = preg_split( '/\\s*[\\|\\x{2013}\\x{2014}]\\s*/u', $title, 2 );
-        return array( 'episode_title' => ! empty( $parts[0] ) ? trim( $parts[0] ) : $title, 'original_air_date' => $date );
+    public static function handle_post_change( $post_id, $post, $update ) {
+        if ( wp_is_post_revision( $post_id ) || 'post' !== $post->post_type ) { return; }
+        self::clear_catalog_cache();
     }
 
-    private static function parse_original_air_date( $date ) {
-        $date = trim( (string) $date );
-        if ( '' === $date ) { return null; }
-
-        // Preserve partial historical dates instead of letting strtotime()
-        // manufacture missing month/day values from the current date.
-        if ( preg_match( '/^(\\d{4})$/', $date, $m ) ) {
-            return sprintf( '%04d-00-00', (int) $m[1] );
-        }
-        if ( preg_match( '/^(\\d{4})-(\\d{1,2})$/', $date, $m ) ) {
-            $month = (int) $m[2];
-            return ( $month >= 1 && $month <= 12 ) ? sprintf( '%04d-%02d-00', (int) $m[1], $month ) : null;
-        }
-        if ( preg_match( '/^(\\d{4})-(\\d{1,2})-(\\d{1,2})$/', $date, $m ) ) {
-            $year = (int) $m[1]; $month = (int) $m[2]; $day = (int) $m[3];
-            if ( $month >= 1 && $month <= 12 && $day >= 1 && $day <= 31 ) {
-                return sprintf( '%04d-%02d-%02d', $year, $month, $day );
-            }
-            return null;
-        }
-
-        $months = array( 'january'=>1,'jan'=>1,'february'=>2,'feb'=>2,'march'=>3,'mar'=>3,'april'=>4,'apr'=>4,'may'=>5,'june'=>6,'jun'=>6,'july'=>7,'jul'=>7,'august'=>8,'aug'=>8,'september'=>9,'sep'=>9,'sept'=>9,'october'=>10,'oct'=>10,'november'=>11,'nov'=>11,'december'=>12,'dec'=>12 );
-        if ( preg_match( '/^([A-Za-z]+)\\s+(\\d{4})$/', $date, $m ) ) {
-            $month = isset( $months[ strtolower( $m[1] ) ] ) ? $months[ strtolower( $m[1] ) ] : 0;
-            return $month ? sprintf( '%04d-%02d-00', (int) $m[2], $month ) : null;
-        }
-        if ( preg_match( '/^([A-Za-z]+)\\s+(\\d{1,2}),?\\s+(\\d{4})$/', $date, $m ) ) {
-            $month = isset( $months[ strtolower( $m[1] ) ] ) ? $months[ strtolower( $m[1] ) ] : 0;
-            $day = (int) $m[2];
-            return ( $month && $day >= 1 && $day <= 31 ) ? sprintf( '%04d-%02d-%02d', (int) $m[3], $month, $day ) : null;
-        }
-
-        // Retain support for other complete date strings, but never use this
-        // fallback for a bare year or year/month value.
-        $t = strtotime( $date );
-        return $t ? gmdate( 'Y-m-d', $t ) : null;
+    public static function handle_deleted_post( $post_id, $post ) {
+        if ( $post && 'post' === $post->post_type ) { self::clear_catalog_cache(); }
     }
 
-    private static function parse_content( $content ) {
-        $text = wp_strip_all_tags( str_replace( array( '<br>', '<br/>', '<br />' ), "\n", (string) $content ) );
-        $text = html_entity_decode( $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
-        $text = preg_replace( "/\\r\\n?|\\x{2028}|\\x{2029}/u", "\n", $text );
-        $lines = array_values( array_filter( array_map( 'trim', explode( "\n", $text ) ), 'strlen' ) );
-        $r = array( 'description' => null, 'original_air_date' => null, 'show' => null, 'credits' => array() );
-
-        // Existing show notes place an optional episode description before
-        // "Original Air Date:". Capture that leading text without requiring
-        // a visible "Description:" label in the WordPress post.
-        foreach ( $lines as $index => $line ) {
-            if ( 0 !== stripos( $line, 'Original Air Date:' ) ) { continue; }
-            if ( $index > 0 ) {
-                $description_lines = array_slice( $lines, 0, $index );
-                if ( $description_lines && 0 !== stripos( $description_lines[0], 'Description:' ) ) {
-                    $description = sanitize_textarea_field( implode( "\n", $description_lines ) );
-                    if ( '' !== $description ) { $r['description'] = $description; }
-                }
-            }
-            break;
-        }
-
-        $types = array(
-            'Stars:' => 'star', 'Star:' => 'star', 'Special Guests:' => 'special_guest', 'Special Guest:' => 'special_guest',
-            'Writer:' => 'writer', 'Writers:' => 'writer', 'Producer:' => 'producer', 'Producers:' => 'producer',
-            'Director:' => 'director', 'Directors:' => 'director', 'Music:' => 'music', 'Announcer:' => 'announcer', 'Narrator:' => 'narrator',
-        );
-        $active = null;
-        foreach ( $lines as $line ) {
-            if ( 0 === stripos( $line, 'Description:' ) ) { $r['description'] = trim( substr( $line, strlen( 'Description:' ) ) ); $active = null; continue; }
-            if ( 0 === stripos( $line, 'Original Air Date:' ) ) { $d = trim( substr( $line, strlen( 'Original Air Date:' ) ) ); $r['original_air_date'] = self::parse_original_air_date( $d ); $active = null; continue; }
-            if ( 0 === stripos( $line, 'Show:' ) ) { $r['show'] = trim( substr( $line, strlen( 'Show:' ) ) ); $active = null; continue; }
-            if ( isset( $types[ $line ] ) ) { $active = $types[ $line ]; continue; }
-            if ( preg_match( '/^[A-Za-z][A-Za-z ]+:$/', $line ) ) { $active = null; continue; }
-            if ( $active && preg_match( '/^[\\x{2022}\\-*]\\s*(.+)$/u', $line, $m ) ) {
-                $c = self::parse_credit_line( $active, trim( $m[1] ) );
-                if ( $c ) { $r['credits'][] = $c; }
-            }
-        }
-        return $r;
-    }
-
-    private static function parse_credit_line( $type, $line ) {
-        $line = trim( str_replace( '_', ' ', $line ) );
-        if ( '' === $line || '.' === $line || '-' === $line ) { return null; }
-        $name = $line;
-        $role = null;
-        if ( preg_match( '/^(.+?)\\s*\\(([^()]*)\\)\\s*$/u', $line, $m ) ) { $name = trim( $m[1] ); $role = trim( $m[2] ); }
-        return array( 'type' => sanitize_key( $type ), 'name' => sanitize_text_field( $name ), 'role' => null !== $role && '' !== $role ? sanitize_text_field( $role ) : null );
-    }
-
-    private static function parse_enclosure( $meta ) {
-        $r = array( 'provider' => null, 'episode_id' => null, 'stream_url' => null, 'download_url' => null, 'duration_seconds' => null, 'duration_display' => null, 'file_size_bytes' => null, 'file_size_display' => null );
-        if ( ! is_string( $meta ) || '' === trim( $meta ) ) { return $r; }
-        $lines = preg_split( '/\\r\\n|\\r|\\n/', $meta );
-        foreach ( $lines as $line ) {
-            $line = trim( $line );
-            if ( '' === $line || false === strpos( $line, 'download.mp3' ) ) { continue; }
-            $url = wp_http_validate_url( $line );
-            if ( ! $url ) { continue; }
-            $host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
-            if ( 'api.spreaker.com' !== $host ) { continue; }
-            if ( preg_match( '#/episodes/(\\d+)/download\\.mp3(?:\\?.*)?$#', $url, $m ) ) {
-                $r['provider'] = 'spreaker';
-                $r['episode_id'] = $m[1];
-                $r['stream_url'] = $url;
-                $r['download_url'] = $url;
-                break;
-            }
-        }
-        if ( isset( $lines[1] ) && ctype_digit( trim( $lines[1] ) ) ) {
-            $b = (int) trim( $lines[1] );
-            if ( $b > 0 ) { $r['file_size_bytes'] = $b; $r['file_size_display'] = size_format( $b, 2 ); }
-        }
-        $extra = trim( (string) end( $lines ) );
-        if ( is_serialized( $extra ) ) {
-            $u = maybe_unserialize( $extra );
-            if ( is_array( $u ) && ! empty( $u['duration'] ) ) {
-                $s = self::duration_to_seconds( $u['duration'] );
-                if ( null !== $s ) { $r['duration_seconds'] = $s; $r['duration_display'] = self::format_duration( $s ); }
-            }
-        }
-        return $r;
-    }
-
-    private static function duration_to_seconds( $d ) {
-        $d = trim( (string) $d );
-        if ( '' === $d ) { return null; }
-        if ( ctype_digit( $d ) ) { return (int) $d; }
-        $p = array_map( 'intval', explode( ':', $d ) );
-        if ( 2 === count( $p ) ) { return $p[0] * 60 + $p[1]; }
-        if ( 3 === count( $p ) ) { return $p[0] * 3600 + $p[1] * 60 + $p[2]; }
-        return null;
-    }
-
-    private static function format_duration( $s ) {
-        $s = max( 0, (int) $s );
-        $h = intdiv( $s, 3600 );
-        $m = intdiv( $s % 3600, 60 );
-        $x = $s % 60;
-        return $h > 0 ? sprintf( '%d:%02d:%02d', $h, $m, $x ) : sprintf( '%d:%02d', $m, $x );
-    }
-
-    private static function clean_series_name( $show ) {
-        $show = html_entity_decode( wp_strip_all_tags( (string) $show ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
-        $show = preg_replace( '/[\\x{00A0}\\x{2000}-\\x{200B}\\x{202F}\\x{205F}\\x{3000}]+/u', ' ', $show );
-        $show = preg_replace( '/\\s+/u', ' ', trim( $show ) );
-        while ( 0 === stripos( $show, 'Show:' ) ) {
-            $show = preg_replace( '/^Show:\\s*/i', '', $show, 1 );
-            $show = preg_replace( '/\\s+/u', ' ', trim( $show ) );
-        }
-        return sanitize_text_field( $show );
-    }
-
-    private static function series_aliases() {
-        return array(
-            'lone-ranger' => array( 'name' => 'The Lone Ranger', 'key' => 'the-lone-ranger' ),
-            'the-lone-ranger' => array( 'name' => 'The Lone Ranger', 'key' => 'the-lone-ranger' ),
-            'wild-bill-hickok' => array( 'name' => 'Adventures of Wild Bill Hickok', 'key' => 'adventures-of-wild-bill-hickok' ),
-            'adventures-of-wild-bill-hickok' => array( 'name' => 'Adventures of Wild Bill Hickok', 'key' => 'adventures-of-wild-bill-hickok' ),
-            'grand-old-opry' => array( 'name' => 'Grand Ole Opry', 'key' => 'grand-ole-opry' ),
-            'grand-ole-opry' => array( 'name' => 'Grand Ole Opry', 'key' => 'grand-ole-opry' ),
-        );
-    }
-
-    private static function canonicalize_series( $show ) {
-        $clean = self::clean_series_name( $show );
-        if ( '' === $clean ) { return null; }
-        $slug = sanitize_title( $clean );
-        $aliases = self::series_aliases();
-        if ( isset( $aliases[ $slug ] ) ) {
-            return array( 'name' => $aliases[ $slug ]['name'], 'key' => $aliases[ $slug ]['key'], 'slug' => $aliases[ $slug ]['key'] );
-        }
-        return array( 'name' => $clean, 'key' => $slug, 'slug' => $slug );
-    }
-
-    private static function build_series_from_show( $show, WP_Post $post ) {
-        $clean = self::clean_series_name( $show );
-        $canonical = self::canonicalize_series( $clean );
-        if ( ! $canonical ) { return null; }
-
-        $source_id = null;
-        $source_name = $clean;
-        $source_slug = sanitize_title( $clean );
-        $key = self::normalize_taxonomy_label( $clean );
-        $canonical_key = self::normalize_taxonomy_label( $canonical['name'] );
-        $tags = get_the_tags( $post->ID );
-        if ( $tags ) {
-            foreach ( $tags as $tag ) {
-                $nk = self::normalize_taxonomy_label( $tag->name );
-                $sk = self::normalize_taxonomy_label( $tag->slug );
-                if ( $key === $nk || $key === $sk || $canonical_key === $nk || $canonical_key === $sk ) {
-                    $source_id = (int) $tag->term_id;
-                    $source_name = $tag->name;
-                    $source_slug = $tag->slug;
-                    break;
-                }
-            }
-        }
-        return array(
-            'id' => $source_id,
-            'key' => $canonical['key'],
-            'name' => $canonical['name'],
-            'slug' => $source_slug,
-            'source_name' => $source_name,
-            'source_slug' => $source_slug,
-        );
-    }
-
-    private static function normalize_taxonomy_label( $v ) {
-        $v = self::clean_series_name( $v );
-        $v = str_replace( array( '_', '-' ), ' ', $v );
-        $v = strtolower( $v );
-        return (string) preg_replace( '/[^a-z0-9]+/', '', $v );
-    }
-
-    private static function genre_definitions() {
-        return array(
-            'western-podcast' => array( 'name' => 'Westerns', 'slug' => 'westerns' ),
-            'western' => array( 'name' => 'Westerns', 'slug' => 'westerns' ),
-            'westerns' => array( 'name' => 'Westerns', 'slug' => 'westerns' ),
-            'mystery' => array( 'name' => 'Mystery', 'slug' => 'mystery' ),
-            'drama' => array( 'name' => 'Drama', 'slug' => 'drama' ),
-            'comedy' => array( 'name' => 'Comedy', 'slug' => 'comedy' ),
-            'crime' => array( 'name' => 'Crime', 'slug' => 'crime' ),
-            'detective' => array( 'name' => 'Detective', 'slug' => 'detective' ),
-            'adventure' => array( 'name' => 'Adventure', 'slug' => 'adventure' ),
-            'horror' => array( 'name' => 'Horror', 'slug' => 'horror' ),
-            'sci-fi' => array( 'name' => 'Science Fiction', 'slug' => 'science-fiction' ),
-            'science-fiction' => array( 'name' => 'Science Fiction', 'slug' => 'science-fiction' ),
-        );
-    }
-
-    private static function canonical_genre_definition( $slug ) {
-        foreach ( self::genre_definitions() as $term => $def ) {
-            if ( $slug === $def['slug'] ) {
-                return array( 'name' => $def['name'], 'slug' => $def['slug'], 'aliases' => self::genre_aliases( $def['slug'] ) );
-            }
-        }
-        return null;
-    }
-
-    private static function genre_aliases( $slug ) {
-        $a = array();
-        foreach ( self::genre_definitions() as $term => $def ) {
-            if ( $slug === $def['slug'] ) { $a[] = $term; }
-        }
-        return array_values( array_unique( $a ) );
+    public static function handle_term_change( $object_id, $terms, $tt_ids, $taxonomy, $append, $old_tt_ids ) {
+        if ( in_array( $taxonomy, array( 'category', 'post_tag' ), true ) ) { self::clear_catalog_cache(); }
     }
 
     private static function build_genres_payload() {
-        $canonical = array();
-        $genres = array();
-        foreach ( self::genre_definitions() as $term => $def ) {
-            $slug = $def['slug'];
-            if ( ! isset( $canonical[ $slug ] ) ) { $canonical[ $slug ] = array( 'name' => $def['name'], 'slug' => $slug, 'aliases' => array() ); }
-            $canonical[ $slug ]['aliases'][] = $term;
+        $out = array();
+        foreach ( self::canonical_genres() as $genre ) {
+            $catalog = self::build_series_catalog( $genre );
+            $count = 0;
+            foreach ( $catalog as $series ) { $count += isset( $series['episode_count'] ) ? (int) $series['episode_count'] : 0; }
+            if ( $count > 0 ) {
+                $out[] = array( 'name' => $genre['name'], 'slug' => $genre['slug'], 'series_count' => count( $catalog ), 'episode_count' => $count );
+            }
         }
-        foreach ( $canonical as $g ) {
-            $cats = self::get_genre_term_ids( 'category', $g['aliases'] );
-            $tags = self::get_genre_term_ids( 'post_tag', $g['aliases'] );
-            $primary = self::count_genre_posts( $cats, array() );
-            $count = self::count_genre_posts( $cats, $tags );
-            if ( ! $count ) { continue; }
-            $genres[] = array( 'name' => $g['name'], 'slug' => $g['slug'], 'episode_count' => $count, 'primary_episode_count' => $primary );
-        }
-        return $genres;
-    }
-
-    private static function get_genre_term_ids( $taxonomy, $aliases ) {
-        $ids = get_terms( array( 'taxonomy' => $taxonomy, 'hide_empty' => true, 'slug' => array_values( array_unique( $aliases ) ), 'fields' => 'ids' ) );
-        return is_wp_error( $ids ) || ! is_array( $ids ) ? array() : array_values( array_map( 'intval', $ids ) );
-    }
-
-    private static function genre_tax_query( $genre, $categories = true, $tags = true ) {
-        $parts = array();
-        if ( $categories ) {
-            $ids = self::get_genre_term_ids( 'category', $genre['aliases'] );
-            if ( $ids ) { $parts[] = array( 'taxonomy' => 'category', 'field' => 'term_id', 'terms' => $ids, 'operator' => 'IN' ); }
-        }
-        if ( $tags ) {
-            $ids = self::get_genre_term_ids( 'post_tag', $genre['aliases'] );
-            if ( $ids ) { $parts[] = array( 'taxonomy' => 'post_tag', 'field' => 'term_id', 'terms' => $ids, 'operator' => 'IN' ); }
-        }
-        if ( count( $parts ) > 1 ) { return array_merge( array( 'relation' => 'OR' ), $parts ); }
-        return $parts;
-    }
-
-    private static function count_genre_posts( $cats, $tags ) {
-        $q = array();
-        if ( $cats ) { $q[] = array( 'taxonomy' => 'category', 'field' => 'term_id', 'terms' => array_map( 'intval', $cats ), 'operator' => 'IN' ); }
-        if ( $tags ) { $q[] = array( 'taxonomy' => 'post_tag', 'field' => 'term_id', 'terms' => array_map( 'intval', $tags ), 'operator' => 'IN' ); }
-        if ( ! $q ) { return 0; }
-        if ( count( $q ) > 1 ) { $q = array_merge( array( 'relation' => 'OR' ), $q ); }
-        $query = new WP_Query( array(
-            'post_type' => 'post',
-            'post_status' => 'publish',
-            'fields' => 'ids',
-            'posts_per_page' => 1,
-            'orderby' => 'none',
-            'ignore_sticky_posts' => true,
-            'no_found_rows' => false,
-            'update_post_meta_cache' => false,
-            'update_post_term_cache' => false,
-            'tax_query' => $q,
-        ) );
-        return (int) $query->found_posts;
+        self::set_catalog_option( 'grapi_genres_catalog_v2', $out );
+        return $out;
     }
 
     private static function build_series_catalog( $genre ) {
-        $tax = self::genre_tax_query( $genre, true, true );
-        if ( empty( $tax ) ) {
-            self::set_catalog_option( self::episode_index_cache_key( $genre['slug'] ), array() );
-            return array();
-        }
-
-        $query = new WP_Query( array(
-            'post_type' => 'post',
-            'post_status' => 'publish',
-            'fields' => 'ids',
-            'posts_per_page' => -1,
-            'orderby' => 'ID',
-            'order' => 'ASC',
-            'ignore_sticky_posts' => true,
-            'no_found_rows' => true,
-            'update_post_meta_cache' => false,
-            'tax_query' => $tax,
-        ) );
-
+        $posts = get_posts( array( 'post_type' => 'post', 'post_status' => 'publish', 'posts_per_page' => -1, 'fields' => 'ids', 'no_found_rows' => true ) );
         $series = array();
-        $index = array();
-
-        foreach ( $query->posts as $id ) {
-            $post = get_post( $id );
-            if ( ! $post ) { continue; }
-            $content = self::parse_content( $post->post_content );
-            $title = self::parse_title( get_the_title( $post ) );
-            $air = ! empty( $content['original_air_date'] ) ? $content['original_air_date'] : $title['original_air_date'];
-            $s = self::build_series_from_show( $content['show'], $post );
-            if ( ! $s || empty( $s['key'] ) ) { continue; }
-
-            $key = $s['key'];
-            $primary = self::detect_primary_genre( $post );
-            $is_primary = is_array( $primary ) && isset( $primary['slug'] ) && $genre['slug'] === $primary['slug'];
-
-            if ( ! isset( $series[ $key ] ) ) {
-                $series[ $key ] = array(
-                    'id' => $s['id'],
-                    'key' => $key,
-                    'name' => $s['name'],
-                    'slug' => $key,
-                    'source_slug' => $s['source_slug'],
-                    'source_terms' => array(),
-                    'match_type' => $is_primary ? 'primary' : 'episode',
-                    'matching_episode_count' => 0,
-                    'primary_episode_count' => 0,
-                );
+        foreach ( $posts as $post_id ) {
+            $match = self::match_post_to_genre( $post_id, $genre );
+            if ( ! $match ) { continue; }
+            $series_info = self::detect_series( $post_id, $match );
+            if ( ! $series_info ) { continue; }
+            $key = $series_info['key'];
+            if ( ! isset( $series[$key] ) ) {
+                $series[$key] = array( 'key' => $key, 'name' => $series_info['name'], 'match_type' => $match['type'], 'episode_count' => 0 );
             }
-
-            $tk = (string) $s['id'] . '|' . $s['source_slug'];
-            if ( ! isset( $series[ $key ]['source_terms'][ $tk ] ) ) {
-                $series[ $key ]['source_terms'][ $tk ] = array( 'id' => $s['id'], 'name' => $s['source_name'], 'slug' => $s['source_slug'] );
-            }
-
-            $series[ $key ]['matching_episode_count']++;
-            if ( $is_primary ) {
-                $series[ $key ]['primary_episode_count']++;
-                $series[ $key ]['match_type'] = 'primary';
-            }
-            if ( null === $series[ $key ]['id'] && null !== $s['id'] ) {
-                $series[ $key ]['id'] = $s['id'];
-                $series[ $key ]['source_slug'] = $s['source_slug'];
-            }
-
-            if ( ! isset( $index[ $key ] ) ) {
-                $index[ $key ] = array( 'matching_post_ids' => array(), 'primary_post_ids' => array(), 'sort_values' => array() );
-            }
-            $index[ $key ]['matching_post_ids'][] = (int) $id;
-            if ( $is_primary ) { $index[ $key ]['primary_post_ids'][] = (int) $id; }
-            $index[ $key ]['sort_values'][ (string) $id ] = array( 'date' => $air, 'title' => $title['episode_title'] );
+            $series[$key]['episode_count']++;
+            if ( 'primary' === $match['type'] ) { $series[$key]['match_type'] = 'primary'; }
         }
-
-        foreach ( $series as $key => &$item ) {
-            $item['source_terms'] = array_values( $item['source_terms'] );
-            if ( 'primary' === $item['match_type'] ) {
-                $matching_ids = isset( $index[ $key ]['matching_post_ids'] ) ? $index[ $key ]['matching_post_ids'] : array();
-                $item['matching_episode_count'] = count( self::get_all_series_episode_ids( $item, $matching_ids ) );
-            }
-        }
-        unset( $item );
         uasort( $series, function( $a, $b ) { return strcasecmp( $a['name'], $b['name'] ); } );
-        self::set_catalog_option( self::episode_index_cache_key( $genre['slug'] ), $index );
         return array_values( $series );
     }
 
-    private static function genre_from_term( $term, $source ) {
-        $defs = self::genre_definitions();
-        $slug = strtolower( (string) $term->slug );
-        if ( ! isset( $defs[ $slug ] ) ) { return null; }
-        return array( 'id' => (int) $term->term_id, 'name' => $defs[ $slug ]['name'], 'slug' => $defs[ $slug ]['slug'], 'source' => $source );
+    private static function build_episode_index( $genre ) {
+        $posts = get_posts( array( 'post_type' => 'post', 'post_status' => 'publish', 'posts_per_page' => -1, 'fields' => 'ids', 'no_found_rows' => true ) );
+        $index = array();
+        foreach ( $posts as $post_id ) {
+            $match = self::match_post_to_genre( $post_id, $genre );
+            if ( ! $match ) { continue; }
+            $series = self::detect_series( $post_id, $match );
+            if ( ! $series ) { continue; }
+            $key = $series['key'];
+            if ( ! isset( $index[$key] ) ) { $index[$key] = array( 'matching_post_ids' => array(), 'sort_values' => array() ); }
+            $index[$key]['matching_post_ids'][] = (int) $post_id;
+            $post = get_post( $post_id );
+            $index[$key]['sort_values'][$post_id] = self::episode_sort_value( $post );
+        }
+        return $index;
     }
 
-    private static function detect_primary_genre( WP_Post $post ) {
-        foreach ( get_the_category( $post->ID ) as $cat ) {
-            $g = self::genre_from_term( $cat, 'category' );
-            if ( $g ) { return $g; }
+    private static function match_post_to_genre( $post_id, $genre ) {
+        $cats = wp_get_post_categories( $post_id, array( 'fields' => 'all' ) );
+        $tags = wp_get_post_tags( $post_id );
+        foreach ( $cats as $cat ) {
+            if ( self::term_matches_genre( $cat, $genre ) ) { return array( 'type' => 'primary', 'term' => $cat ); }
+        }
+        foreach ( $tags as $tag ) {
+            if ( self::term_matches_genre( $tag, $genre ) ) { return array( 'type' => 'secondary', 'term' => $tag ); }
         }
         return null;
     }
 
-    private static function detect_episode_genres( WP_Post $post, $primary ) {
-        $genres = array();
-        $seen = array();
-        if ( is_array( $primary ) && ! empty( $primary['slug'] ) ) {
-            $genres[] = $primary;
-            $seen[ $primary['slug'] ] = true;
+    private static function term_matches_genre( $term, $genre ) {
+        $slug = sanitize_title( $term->slug );
+        $name = sanitize_title( $term->name );
+        return $slug === $genre['slug'] || $name === $genre['slug'] || in_array( $slug, $genre['aliases'], true ) || in_array( $name, $genre['aliases'], true );
+    }
+
+    private static function detect_series( $post_id, $genre_match ) {
+        $cats = wp_get_post_categories( $post_id, array( 'fields' => 'all' ) );
+        $matched_id = isset( $genre_match['term']->term_id ) ? (int) $genre_match['term']->term_id : 0;
+        $candidates = array();
+        foreach ( $cats as $cat ) {
+            if ( (int) $cat->term_id === $matched_id ) { continue; }
+            if ( 0 !== (int) $cat->parent ) { $candidates[] = $cat; }
         }
-        $tags = get_the_tags( $post->ID );
-        if ( $tags ) {
-            foreach ( $tags as $tag ) {
-                $g = self::genre_from_term( $tag, 'tag' );
-                if ( ! $g || isset( $seen[ $g['slug'] ] ) ) { continue; }
-                $genres[] = $g;
-                $seen[ $g['slug'] ] = true;
+        if ( empty( $candidates ) ) {
+            foreach ( $cats as $cat ) {
+                if ( (int) $cat->term_id !== $matched_id ) { $candidates[] = $cat; }
             }
         }
-        return $genres;
+        if ( empty( $candidates ) ) { return null; }
+        usort( $candidates, function( $a, $b ) { return (int) $b->parent <=> (int) $a->parent; } );
+        $cat = $candidates[0];
+        $name = $cat->name;
+        $key = sanitize_title( $cat->slug ? $cat->slug : $name );
+        return array( 'key' => $key, 'name' => $name, 'category_id' => (int) $cat->term_id );
     }
 
-    private static function detect_publisher_feed( WP_Post $post ) {
-        foreach ( get_the_category( $post->ID ) as $cat ) {
-            $slug = (string) $cat->slug;
-            if ( preg_match( '/-season-\\d+$/', $slug ) || self::genre_from_term( $cat, 'category' ) ) { continue; }
-            return array( 'id' => (int) $cat->term_id, 'name' => $cat->name, 'slug' => $cat->slug );
+    private static function get_all_series_episode_ids( $series_item, $fallback ) {
+        $term = get_term_by( 'slug', $series_item['key'], 'category' );
+        if ( ! $term || is_wp_error( $term ) ) { return $fallback; }
+        $ids = get_objects_in_term( (int) $term->term_id, 'category' );
+        if ( is_wp_error( $ids ) ) { return $fallback; }
+        return array_values( array_unique( array_map( 'intval', $ids ) ) );
+    }
+
+    private static function find_series_catalog_item( $catalog, $key ) {
+        foreach ( $catalog as $item ) { if ( isset( $item['key'] ) && $item['key'] === $key ) { return $item; } }
+        return null;
+    }
+
+    private static function find_series_parent_category( $series_item, $ids ) {
+        $term = get_term_by( 'slug', $series_item['key'], 'category' );
+        if ( $term && ! is_wp_error( $term ) ) { return $term; }
+        foreach ( $ids as $id ) {
+            $cats = wp_get_post_categories( $id, array( 'fields' => 'all' ) );
+            foreach ( $cats as $cat ) { if ( sanitize_title( $cat->slug ) === $series_item['key'] ) { return $cat; } }
         }
         return null;
+    }
+
+    private static function get_series_season_terms( $parent, $ids ) {
+        $children = get_terms( array( 'taxonomy' => 'category', 'hide_empty' => false, 'parent' => (int) $parent->term_id ) );
+        if ( is_wp_error( $children ) ) { return array(); }
+        $out = array();
+        foreach ( $children as $child ) {
+            $objects = get_objects_in_term( (int) $child->term_id, 'category' );
+            if ( is_wp_error( $objects ) ) { continue; }
+            $count = count( array_intersect( array_map( 'intval', $objects ), $ids ) );
+            if ( $count ) { $out[] = array( 'id' => (int) $child->term_id, 'name' => $child->name, 'slug' => $child->slug, 'episode_count' => $count ); }
+        }
+        usort( $out, function( $a, $b ) { return strnatcasecmp( $a['name'], $b['name'] ); } );
+        return $out;
+    }
+
+    private static function episode_sort_value( $post ) {
+        $date = self::original_air_date( $post );
+        if ( $date ) { return $date . '-' . sprintf( '%010d', $post->ID ); }
+        return get_post_time( 'Y-m-d-H-i-s', false, $post ) . '-' . sprintf( '%010d', $post->ID );
+    }
+
+    private static function build_episode_payload( $post ) {
+        $cats = wp_get_post_categories( $post->ID, array( 'fields' => 'all' ) );
+        $tags = wp_get_post_tags( $post->ID );
+        $genres = array();
+        foreach ( self::canonical_genres() as $genre ) {
+            $match = self::match_post_to_genre( $post->ID, $genre );
+            if ( $match ) { $genres[] = array( 'name' => $genre['name'], 'slug' => $genre['slug'], 'source' => 'primary' === $match['type'] ? 'category' : 'tag' ); }
+        }
+        $primary_genre = null;
+        foreach ( $genres as $genre ) { if ( 'category' === $genre['source'] ) { $primary_genre = $genre; break; } }
+        if ( ! $primary_genre && ! empty( $genres ) ) { $primary_genre = $genres[0]; }
+        $series = null;
+        if ( $primary_genre ) {
+            $definition = self::canonical_genre_definition( $primary_genre['slug'] );
+            $match = $definition ? self::match_post_to_genre( $post->ID, $definition ) : null;
+            $series = $match ? self::detect_series( $post->ID, $match ) : null;
+        }
+        $publisher_feed = self::detect_publisher_feed( $post, $cats );
+        $enclosures = self::get_enclosure_candidates( $post );
+        return array(
+            'post_id' => (int) $post->ID,
+            'web_url' => get_permalink( $post ),
+            'pretty_url' => get_permalink( $post ),
+            'title' => html_entity_decode( get_the_title( $post ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ),
+            'series' => $series ? array( 'id' => $series['category_id'], 'name' => $series['name'], 'slug' => $series['key'] ) : null,
+            'publisher_feed' => $publisher_feed,
+            'genre' => $primary_genre,
+            'primary_genre' => $primary_genre,
+            'episode_genres' => $genres,
+            'source' => self::detect_source(),
+            'original_air_date' => self::original_air_date( $post ),
+            'published_date' => get_post_time( DATE_ATOM, false, $post ),
+            'modified_date' => get_post_modified_time( DATE_ATOM, false, $post ),
+            'description' => self::description_for_post( $post ),
+            'enclosures' => $enclosures,
+        );
+    }
+
+    private static function detect_publisher_feed( $post, $cats ) {
+        foreach ( $cats as $cat ) {
+            if ( 0 === (int) $cat->parent ) { continue; }
+            $parent = get_term( (int) $cat->parent, 'category' );
+            if ( $parent && ! is_wp_error( $parent ) && 0 === (int) $parent->parent ) {
+                return array( 'id' => (int) $cat->term_id, 'name' => $cat->name, 'slug' => $cat->slug );
+            }
+        }
+        return null;
+    }
+
+    private static function original_air_date( $post ) {
+        $candidates = array(
+            get_post_meta( $post->ID, 'original_air_date', true ),
+            get_post_meta( $post->ID, '_original_air_date', true ),
+            get_post_meta( $post->ID, 'air_date', true ),
+        );
+        foreach ( $candidates as $value ) {
+            if ( ! is_string( $value ) || '' === trim( $value ) ) { continue; }
+            $value = trim( $value );
+            if ( preg_match( '/^(19|20)\\d{2}-\\d{2}-\\d{2}$/', $value ) ) { return $value; }
+            $ts = strtotime( $value );
+            if ( $ts ) { return gmdate( 'Y-m-d', $ts ); }
+        }
+        if ( preg_match( '/(?:^|[^0-9])((?:19|20)\\d{2})[-_\\/. ](0?[1-9]|1[0-2])[-_\\/. ](0?[1-9]|[12]\\d|3[01])(?:[^0-9]|$)/', $post->post_title, $m ) ) {
+            return sprintf( '%04d-%02d-%02d', (int) $m[1], (int) $m[2], (int) $m[3] );
+        }
+        return null;
+    }
+
+    private static function description_for_post( $post ) {
+        $excerpt = trim( wp_strip_all_tags( $post->post_excerpt ) );
+        if ( '' !== $excerpt ) { return $excerpt; }
+        $content = trim( wp_strip_all_tags( strip_shortcodes( $post->post_content ) ) );
+        return $content;
     }
 
     private static function detect_source() {
-        $url = home_url( '/' );
-        $host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
-        $host = preg_replace( '/^www\\./', '', $host );
-        $known = array(
-            'otrwesterns.com' => array( 'key' => 'otrwesterns', 'name' => 'Old Time Radio Westerns' ),
-            'otnetcast.com' => array( 'key' => 'otnetcast', 'name' => 'Old Time Radio Netcast' ),
-        );
-        if ( isset( $known[ $host ] ) ) {
-            $key = $known[ $host ]['key'];
-            $name = $known[ $host ]['name'];
-        } else {
-            $key = sanitize_title( $host );
-            $name = get_bloginfo( 'name' );
+        return array( 'key' => sanitize_title( get_bloginfo( 'name' ) ), 'name' => get_bloginfo( 'name' ), 'site_url' => home_url( '/' ) );
+    }
+
+    private static function get_enclosure_candidates( $post ) {
+        $items = array();
+        $raw = get_post_meta( $post->ID, 'enclosure', false );
+        foreach ( $raw as $entry ) {
+            $lines = preg_split( '/\\r\\n|\\r|\\n/', (string) $entry );
+            if ( empty( $lines[0] ) || ! filter_var( trim( $lines[0] ), FILTER_VALIDATE_URL ) ) { continue; }
+            $items[] = array( 'url' => esc_url_raw( trim( $lines[0] ) ), 'length' => isset( $lines[1] ) ? (int) $lines[1] : null, 'type' => isset( $lines[2] ) ? trim( $lines[2] ) : null, 'source' => 'wordpress_enclosure' );
         }
-        return array( 'key' => $key, 'name' => sanitize_text_field( $name ), 'site_url' => esc_url_raw( $url ) );
+        return $items;
     }
 }
 
