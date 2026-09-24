@@ -4,21 +4,23 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 
 ## Current Version
 
-**0.1.19**
+**0.1.21**
 
-## v0.1.19 Partial Original Air Dates / v0.1.18 Repair
+## v0.1.21 Series Catalog Regression Repair
 
-Version 0.1.19 supersedes the incomplete v0.1.18 release package and contains the intended Original Air Date parsing fix using the complete Golden Replay API plugin source.
+Version 0.1.21 repairs the series/catalog regression introduced in the v0.1.20 package while retaining the intended Golden Replay API browse model.
 
-- A year-only value such as `1949` is preserved as `1949-00-00`.
-- A month/year value such as `May 1949` is preserved as `1949-05-00`.
-- A complete date such as `May 12, 1949` remains `1949-05-12`.
-- Missing or unrecognized historical dates remain unknown rather than borrowing the current date.
-- Partial historical dates are no longer passed through PHP `strtotime()` in a way that fills missing month/day components from the current date.
+- Restores historical series identification from the episode content's `Show:` value instead of choosing an arbitrary WordPress category as the series.
+- Restores normalized canonical series keys and known series aliases.
+- Restores the complete genre -> series -> year/season -> episode browse flow.
+- Restores primary-versus-secondary genre behavior used by `/series`, `/seasons`, `/episodes`, and `/latest`.
+- Preserves partial Original Air Dates introduced in v0.1.19.
+- Restores the persistent catalog/index cache and invalidation behavior.
+- Corrects both the WordPress plugin header and `GRAPI_VERSION` constant to `0.1.21`.
 
-This allows Golden Replay clients and importers to group year-only episodes under the correct historical year while retaining the fact that the month and/or day are unknown.
+This repair specifically addresses cases such as **The Six Shooter**, where an episode can be correctly identified as a Western but fail to appear as the expected series because v0.1.20 derived the series from unrelated category hierarchy information.
 
-**v0.1.18 should not be installed.** Its published package contained an incomplete `golden-replay-api.php` file. Version 0.1.19 replaces that release with the complete plugin source plus the intended date-parsing correction.
+See `RELEASE-NOTES-v0.1.21.md` for release details.
 
 ## Current API Endpoints
 
@@ -34,129 +36,21 @@ This allows Golden Replay clients and importers to group year-only episodes unde
 
 All endpoints expose information derived only from published WordPress posts.
 
-## Admin Enclosure Inspector
+## Taxonomy Model
 
-The plugin includes an administrator-only diagnostic tool under **Settings → Golden Replay API** in WordPress.
+### Series
 
-The **Enclosure Inspector** accepts either a WordPress post ID or a full episode URL and retrieves all stored `enclosure` post-meta values for that post. It displays each enclosure's parsed URL, length, MIME type, and raw enclosure metadata. This is intended to diagnose posts that may contain multiple audio variants, such as Standard, Ad-Free, or other edited versions, before those variants are modeled by the Golden Replay API.
+The historical radio series is read from the episode content's `Show:` value and normalized into a canonical series key. Matching WordPress tags are used as source provenance and, for primary-series browsing, to discover the complete published series set.
 
-The inspector is available only to users with the `manage_options` capability and its form is protected with a WordPress nonce. It does **not** add a REST route, does **not** change the public episode payload, and does **not** expose alternate enclosure URLs through the public Golden Replay API.
-
-## v0.1.17 Version Metadata Correction
-
-Version 0.1.17 corrects the plugin version metadata after the Enclosure Inspector release package continued to identify itself internally as 0.1.15. Both the WordPress plugin header and `GRAPI_VERSION` constant now report 0.1.17 so WordPress can correctly recognize the installed release and stop repeatedly offering the same update.
-
-The administrator-only Enclosure Inspector introduced immediately before this correction remains unchanged.
-
-## v0.1.15 Latest Published Episode
-
-Version 0.1.15 adds the `/latest` endpoint used by the Golden Replay Home screen to retrieve the newest published episode for a selected genre.
-
-Example:
-
-```text
-/wp-json/golden-replay/v1/latest?genre=westerns
-```
-
-The endpoint selects the most recent episode using the WordPress publication date, not the episode's historical `original_air_date`. This keeps Home-screen featured content aligned with what was most recently released on the site while preserving historical air-date ordering in the existing `/episodes` browse endpoint.
-
-The response includes the selected genre plus the complete normalized episode payload, including series information, description, original air date, published date, duration, audio information, credits, and availability.
-
-For a primary-genre series, the same series-selection rules used by the browse API are preserved so published episodes belonging to that series may still qualify even when an individual post is missing the primary genre taxonomy. Secondary genre matches remain limited to episodes that actually match the selected genre.
-
-## v0.1.14 Catalog Cache Namespace Refresh
-
-Version 0.1.14 bumps the persistent catalog cache namespace so corrected series counts and derived-year behavior introduced in v0.1.13 become visible immediately instead of waiting for previously stored catalog data to age out.
-
-No public endpoint contract changed in v0.1.14.
-
-## v0.1.13 Series Counts and Derived Year Browsing
-
-Version 0.1.13 fixes several issues exposed by programs such as **Lux Radio Theatre** that use true ordinal season categories while also having episodes identified through series tags and historical `Show:` values.
-
-- Primary-series episode counts now include tag-discovered episodes used by the `all_series` selection mode.
-- Derived year browsing is built from the complete selected series episode set instead of creating separate year rows for each ordinal season category.
-- Episodes that belong to the selected series but are not assigned to a child season category are still included in the appropriate derived year.
-- Derived year slugs use sanitizer-safe values such as `gr-year-1939` and `gr-year-unknown`.
-- `/seasons` counts and `/episodes?season=...` now use the same selected episode set, so a displayed year count should match the episodes returned when that year is opened.
-- Direct taxonomy-season behavior remains unchanged for true year-coded season categories.
-
-## v0.1.12 Ordinal Seasons and Year Codes
-
-Version 0.1.12 distinguishes true season numbers from abbreviated year codes.
-
-Two-digit season values from **20 through 80** are treated as twentieth-century year codes. For example, `Season 53` is presented as `1953` and `Season 80` as `1980`.
-
-Season values outside that range are treated as ordinal season numbers. Their browse years are derived from each episode's `original_air_date`, allowing a single ordinal season to span more than one calendar year. `Season 00` remains the convention for `Unknown`.
-
-## v0.1.11 Episode Description Parsing
-
-Version 0.1.11 adds description fallback parsing for the existing WordPress authoring format.
-
-If descriptive text appears before `Original Air Date:`, that leading text is returned as the episode `description`. If `Original Air Date:` is the first meaningful line, `description` remains null. An explicit `Description:` label is still supported but is not required.
-
-## v0.1.10 Season / Year Browsing
-
-Version 0.1.10 adds season/year discovery so long-running programs can be browsed without loading thousands of episodes into the client.
-
-`/seasons` requires the canonical genre slug and canonical series key returned by the catalog endpoints. Golden Replay discovers a series' WordPress show category and reads its direct child categories that follow the existing `Season ##` naming convention. The prefix is not hard-coded, so categories such as `TCK Season 53` and `LR Season 53` are handled by their parent/child relationship rather than by the show-specific prefix.
-
-The existing `/episodes` endpoint accepts an optional `season` parameter containing the season slug returned by `/seasons`. When supplied, only episodes for that browse selection are returned. Air-date ordering and pagination are then applied to that filtered set. When `season` is omitted, the series behavior remains unchanged for backward compatibility.
-
-## v0.1.9 Historical Episode Ordering
-
-Version 0.1.9 orders episode results by `original_air_date` across the complete selected set before pagination. Episodes with known air dates are ordered chronologically; episodes without a known air date are placed after dated episodes and use title ordering as the fallback.
-
-## v0.1.8 Filtered Episode Catalog
-
-Version 0.1.8 adds the episode-list endpoint used for the Golden Replay browse flow: `Genre -> Series -> Episodes`.
-
-`/episodes` requires the canonical genre slug and canonical series key returned by the catalog endpoints. Results are paginated with a default of 25 episodes per page and a maximum of 100. `page`, `per_page`, and `order=asc|desc` are supported.
-
-The selected genre context is preserved when opening a series. When the selected genre is the series' primary genre, the endpoint returns all published episodes belonging to that series. When the series appears only because individual episodes carry the selected genre as a secondary match, only those matching episodes are returned.
-
-The episode index is generated alongside the existing series catalog and stored in the same persistent cache model introduced in v0.1.7. Post/category/tag changes continue to invalidate the catalog generation and schedule a background rebuild.
-
-## v0.1.7 Catalog Performance
-
-Version 0.1.7 changes the genre and series catalog cache from short-lived five-minute transients to persistent prebuilt WordPress options.
-
-Normal API requests return the existing catalog immediately. Catalog records store a build timestamp and generation number. Post saves/deletes and category/tag changes advance the catalog generation and schedule a background rebuild through WP-Cron rather than deleting the existing catalog and forcing the next API caller to rebuild it.
-
-A 24-hour maximum cache age provides a safety refresh. Stale catalogs continue to be served while a rebuild is scheduled, providing stale-while-revalidate behavior. A rebuild lock prevents overlapping scheduled catalog rebuild jobs.
-
-## v0.1.6 Series Normalization
-
-Series names are cleaned before matching. Unicode/nonbreaking whitespace is normalized, repeated whitespace is collapsed, and a stray leading `Show:` prefix is removed.
-
-Known aliases currently include:
+Known aliases include:
 
 - `Lone Ranger` and `The Lone Ranger` -> `The Lone Ranger`
 - `Wild Bill Hickok` and `Adventures of Wild Bill Hickok` -> `Adventures of Wild Bill Hickok`
 - `Grand Old Opry` and `Grand Ole Opry` -> `Grand Ole Opry`
 
-Each normalized series has a stable application-facing `key` independent of source-local WordPress term IDs.
-
-## Taxonomy Model
-
-### Series
-
-The historical radio series is read from the episode content's `Show:` value and normalized into a canonical series key. Golden Replay also uses matching WordPress tags as source provenance and, for primary-series browsing, to discover the complete published series set.
-
 ### Show Category and Seasons
 
-A show's WordPress category may contain direct child season categories, for example:
-
-```text
-Western Podcast
-└── Cisco Kid
-    ├── TCK Season 00
-    ├── TCK Season 52
-    ├── TCK Season 53
-    └── TCK Season 54
-```
-
-For year-coded season structures, the category hierarchy remains the source of truth. For ordinal season structures, Golden Replay derives browse years from the selected series episodes' `original_air_date` values so episodes are grouped by calendar year even when a traditional season spans multiple years.
+A show's WordPress category may contain direct child season categories. Year-coded season categories are used directly. For ordinal seasons, Golden Replay derives browse years from episode `original_air_date` values.
 
 ### Primary Genre
 
@@ -166,29 +60,67 @@ The primary browse genre comes from a recognized WordPress category. Current rec
 
 ### Episode Genres
 
-`episode_genres` contains the primary category genre plus any additional recognized genre tags assigned to an episode. Duplicate canonical genres are removed.
+`episode_genres` contains the primary category genre plus recognized genre tags assigned to an episode. Duplicate canonical genres are removed.
 
-### Source and Publisher Feed
+## Original Air Dates
 
-Each catalog response identifies its WordPress source. `publisher_feed` remains provenance metadata and is not used as the Golden Replay genre.
+Golden Replay preserves incomplete historical dates rather than inventing missing components:
+
+- `1949` -> `1949-00-00`
+- `May 1949` -> `1949-05-00`
+- `May 12, 1949` -> `1949-05-12`
+
+Missing or unrecognized historical dates remain unknown.
+
+## Catalog and Episode Browsing
+
+The API supports the server-side browse flow used by the SwiftUI client:
+
+`Genres -> Series -> Year/Season -> Episodes -> Episode detail/audio`
+
+Episode results are ordered by `original_air_date` before pagination. Programs with year-coded season categories browse by those categories; ordinal-season programs can use calendar years derived from episode air dates.
+
+The `/latest` endpoint uses WordPress publication date rather than historical air date so featured content follows the site's current release schedule.
+
+## Admin Enclosure Inspector
+
+The plugin includes an administrator-only diagnostic tool under **Settings -> Golden Replay API**. The Enclosure Inspector accepts a WordPress post ID or episode URL and displays stored `enclosure` metadata for troubleshooting audio variants.
+
+It requires `manage_options`, uses WordPress nonce protection, does not add a public REST route, and does not expose alternate enclosure URLs through the public Golden Replay API.
 
 ## Audio / Spreaker
 
-Golden Replay reads WordPress `enclosure` post metadata server-side. Valid Spreaker URLs are restricted to `api.spreaker.com`. Duration and file-size values remain nullable because the Spreaker WordPress integration may not populate them until metadata has been refreshed.
-
-The administrator-only Enclosure Inspector can retrieve all `enclosure` values for diagnostic purposes without changing the public API response. This allows multiple stored audio variants to be investigated without exposing their URLs to API consumers.
+Golden Replay reads WordPress `enclosure` post metadata server-side. Valid Spreaker URLs are restricted to `api.spreaker.com`. Duration and file-size values remain nullable when the source integration has not populated them.
 
 ## Security Design
 
 The public API is intentionally read-only and narrowly scoped. Only published posts are returned, counted, or included in catalog discovery. Inputs are validated and sanitized, responses are explicitly constructed, raw WordPress post meta is not exposed, and no create/edit/delete/upload/execute endpoints or secrets are provided.
 
-Administrative diagnostics are kept outside the REST API. The Enclosure Inspector requires `manage_options`, uses nonce validation, and does not make alternate enclosure metadata publicly addressable through Golden Replay REST routes.
+## Catalog Cache
+
+Genre, series, and episode catalog data is stored in persistent WordPress options. Post/category/tag changes advance the catalog generation and schedule a background rebuild through WP-Cron. A 24-hour maximum cache age provides a safety refresh and a rebuild lock prevents overlapping rebuild jobs.
 
 ## Automatic Updates
 
-The plugin includes the existing native GitHub release updater in `github-updater.php`. The updater preserves the installed plugin directory so activation and automatic-update preferences remain stable across GitHub release updates.
+The plugin includes the native GitHub release updater in `github-updater.php`. A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, for example `v0.1.21`.
 
-A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, such as `v0.1.19`.
+## Release History
+
+- **0.1.21** — Repairs the v0.1.20 series/catalog regression and restores `Show:`-based series identification and the full browse/catalog implementation.
+- **0.1.20** — Release package that introduced the series/catalog regression repaired by 0.1.21.
+- **0.1.19** — Preserves partial Original Air Dates and replaces the incomplete 0.1.18 package.
+- **0.1.18** — Incomplete release package; should not be installed.
+- **0.1.17** — Corrected plugin version metadata for the Enclosure Inspector release.
+- **0.1.15** — Added `/latest` for newest published episode by genre.
+- **0.1.14** — Refreshed catalog cache namespace.
+- **0.1.13** — Improved series counts and derived-year browsing.
+- **0.1.12** — Distinguished ordinal seasons from two-digit year codes.
+- **0.1.11** — Added episode description fallback parsing.
+- **0.1.10** — Added season/year browsing.
+- **0.1.9** — Added historical episode ordering.
+- **0.1.8** — Added filtered episode catalog endpoint.
+- **0.1.7** — Added persistent catalog caching and background rebuilds.
+- **0.1.6** — Added series normalization and aliases.
 
 ## Development Workflow
 
@@ -208,15 +140,7 @@ Publish a GitHub Release
 WordPress detects the newer release
 ```
 
-**README requirement:** Every functional plugin change should include the corresponding README update in the same branch/PR so documentation stays synchronized with the code.
-
-## Current Development Status
-
-Version 0.1.19 provides the server-side browse flow used by the SwiftUI client: `Genres -> Series -> Year -> Episodes -> Episode detail/audio`, plus a dedicated `Latest Published Episode` lookup for Home-screen featured content. Historical browsing continues to use `original_air_date`, including partial historical dates whose unknown month/day components remain `00`, while `/latest` uses the WordPress publication date so featured content follows the site's release schedule.
-
-The current development branch also includes the administrator-only Enclosure Inspector for safely examining multiple stored audio enclosures before a public/private audio-variant model is implemented.
-
-Programs with valid year-coded season categories continue to browse by those categories, while ordinal-season programs can use calendar years derived from episode air dates. Programs without usable season/year browsing continue to support direct series-to-episodes requests.
+**README requirement:** Every functional plugin change must include the corresponding README update in the same branch/PR so documentation stays synchronized with the code.
 
 ## Publisher
 
