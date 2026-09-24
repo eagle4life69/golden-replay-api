@@ -4,11 +4,11 @@ A secure, read-only WordPress REST API plugin that provides normalized classic r
 
 ## Current Version
 
-**0.1.21**
+**0.1.22**
 
-## v0.1.21 Series Catalog Regression Repair
+## v0.1.22 Series Catalog Regression Repair
 
-Version 0.1.21 repairs the series/catalog regression introduced in the v0.1.20 package while retaining the intended Golden Replay API browse model.
+Version 0.1.22 repairs the series/catalog regression introduced in the v0.1.20 package while retaining the intended Golden Replay API browse model.
 
 - Restores historical series identification from the episode content's `Show:` value instead of choosing an arbitrary WordPress category as the series.
 - Restores normalized canonical series keys and known series aliases.
@@ -16,11 +16,11 @@ Version 0.1.21 repairs the series/catalog regression introduced in the v0.1.20 p
 - Restores primary-versus-secondary genre behavior used by `/series`, `/seasons`, `/episodes`, and `/latest`.
 - Preserves partial Original Air Dates introduced in v0.1.19.
 - Restores the persistent catalog/index cache and invalidation behavior.
-- Corrects both the WordPress plugin header and `GRAPI_VERSION` constant to `0.1.21`.
+- Corrects both the WordPress plugin header and `GRAPI_VERSION` constant to `0.1.22`.
 
 This repair specifically addresses cases such as **The Six Shooter**, where an episode can be correctly identified as a Western but fail to appear as the expected series because v0.1.20 derived the series from unrelated category hierarchy information.
 
-See `RELEASE-NOTES-v0.1.21.md` for release details.
+See `RELEASE-NOTES-v0.1.22.md` for release details.
 
 ## Current API Endpoints
 
@@ -102,12 +102,12 @@ Genre, series, and episode catalog data is stored in persistent WordPress option
 
 ## Automatic Updates
 
-The plugin includes the native GitHub release updater in `github-updater.php`. A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, for example `v0.1.21`.
+The plugin includes the native GitHub release updater in `github-updater.php`. A published GitHub Release is required for WordPress to discover a new version. Release tags should correspond to plugin versions, for example `v0.1.22`.
 
 ## Release History
 
-- **0.1.21** — Repairs the v0.1.20 series/catalog regression and restores `Show:`-based series identification and the full browse/catalog implementation.
-- **0.1.20** — Release package that introduced the series/catalog regression repaired by 0.1.21.
+- **0.1.22** — Repairs the v0.1.20 series/catalog regression and restores `Show:`-based series identification and the full browse/catalog implementation.
+- **0.1.20** — Release package that introduced the series/catalog regression repaired by 0.1.22.
 - **0.1.19** — Preserves partial Original Air Dates and replaces the incomplete 0.1.18 package.
 - **0.1.18** — Incomplete release package; should not be installed.
 - **0.1.17** — Corrected plugin version metadata for the Enclosure Inspector release.
