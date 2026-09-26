@@ -1,5 +1,10 @@
 # Golden Replay API
 
+## Two deployable components
+
+- The repository root contains the existing WordPress plugin for OTRWesterns.com. Keep its normal plugin release process.
+- [`api-site/`](api-site/) contains the standalone catalog API for `api.goldenreplay.app`. Deploy only that directory's contents to the API host document root. It reads the Golden Replay database directly and does not run inside WordPress. See its README for configuration and rollout.
+
 A secure, read-only WordPress REST API plugin that provides normalized classic radio episode and catalog data for the **Golden Replay** application.
 
 ## Current Version
